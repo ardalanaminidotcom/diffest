@@ -706,6 +706,8 @@ button[aria-pressed="true"], button.primary:not(:disabled) {
   z-index: 1;
   inset: 0 0 auto auto;
   width: min(100%, 44rem);
+  max-block-size: 100%;
+  overflow: auto;
   box-sizing: border-box;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -749,6 +751,7 @@ progress::-webkit-progress-bar { background: var(--border); }
 progress::-webkit-progress-value { background: var(--accent); }
 progress::-moz-progress-bar { background: var(--accent); }
 .file-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.36rem;
