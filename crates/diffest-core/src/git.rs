@@ -59,6 +59,8 @@ fn git_with_index(
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // Keep index operations from using a checkout-configured fsmonitor hook.
+        .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .args(paths);
     if let Some(index) = index {
@@ -780,4 +782,25 @@ fn parse_raw_patch(output: &[u8]) -> Option<Vec<RawPatch<'_>>> {
         });
     }
     (offsets.next()? == patch.len()).then_some(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git;
+    use std::process::Command;
+
+    #[test]
+    fn git_commands_disable_the_repository_fsmonitor_setting() {
+        let repo = tempfile::tempdir().unwrap();
+        for args in [&["init", "--quiet"][..], &["config", "core.fsmonitor", "true"]] {
+            assert!(Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let configured = git(repo.path(), &["config", "--bool", "core.fsmonitor"]).unwrap();
+        assert_eq!(configured, b"false\n");
+    }
 }
