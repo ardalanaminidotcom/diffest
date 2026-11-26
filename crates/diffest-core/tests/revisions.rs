@@ -213,3 +213,108 @@ fn comparing_diverged_branches_uses_effective_commits_and_returns_each_files_pat
             .is_err()
     );
 }
+
+#[test]
+fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Common ancestor"]);
+    let ancestor = git(&main, &["rev-parse", "HEAD"]);
+    git(&main, &["worktree", "add", "-b", "topic", "../linked"]);
+    let linked = temp.path().join("linked");
+
+    fs::write(main.join("main.txt"), "Main branch\n").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Main change"]);
+    let main_tip = git(&main, &["rev-parse", "HEAD"]);
+
+    fs::write(linked.join("one.txt"), "First change\n").unwrap();
+    fs::write(linked.join("two.txt"), "Second change\n").unwrap();
+    git(&linked, &["add", "."]);
+    git(&linked, &["commit", "-m", "Topic changes"]);
+    let topic_tip = git(&linked, &["rev-parse", "HEAD"]);
+
+    let database = temp.path().join("diffest.sqlite3");
+    let app = Application::new(database.clone());
+    app.register_project(&main).unwrap();
+    let comparison = app
+        .compare_revisions(&main, "main", "topic", ComparisonMode::Divergence)
+        .unwrap();
+
+    fs::write(linked.join("one.txt"), "Updated branch\n").unwrap();
+    git(&linked, &["commit", "-am", "Move topic before saving"]);
+    let saved = app.save_commit_review(&main, &comparison).unwrap();
+    assert_eq!(
+        app.set_commit_file_reviewed(&main, saved, 0, true).unwrap(),
+        [0]
+    );
+    fs::write(linked.join("two.txt"), "Updated after saving\n").unwrap();
+    git(&linked, &["commit", "-am", "Move topic after saving"]);
+    drop(app);
+
+    let app = Application::new(database);
+    let projects = app.list_projects().unwrap();
+    assert_eq!(projects[0].saved_reviews.len(), 1);
+    let summary = &projects[0].saved_reviews[0];
+    assert_eq!(summary.id, saved);
+    assert_eq!(summary.base_label, "main");
+    assert_eq!(summary.target_label, "topic");
+    assert_eq!(summary.file_count, 2);
+    assert_eq!(summary.reviewed_count, 1);
+
+    let reopened = app.open_commit_review(&linked, saved).unwrap();
+    assert_eq!(reopened.comparison.base, main_tip);
+    assert_eq!(reopened.comparison.start, ancestor);
+    assert_eq!(reopened.comparison.end, topic_tip);
+    assert_eq!(reopened.comparison.mode, ComparisonMode::Divergence);
+    assert_eq!(reopened.comparison.files.len(), 2);
+    assert_eq!(reopened.comparison.files[0].path, "one.txt");
+    assert!(
+        reopened.comparison.files[0]
+            .patch
+            .contains("+First change\n")
+    );
+    assert_eq!(reopened.comparison.files[1].path, "two.txt");
+    assert_eq!(
+        reopened.comparison.files[1].patch,
+        comparison.files[1].patch
+    );
+    assert_eq!(reopened.reviewed_files, [0]);
+
+    assert_eq!(
+        app.set_commit_file_reviewed(&linked, saved, 1, true)
+            .unwrap(),
+        [0, 1]
+    );
+    let projects = app.list_projects().unwrap();
+    let completed = &projects[0].saved_reviews[0];
+    assert_eq!(completed.reviewed_count, completed.file_count);
+
+    assert!(
+        app.set_commit_file_reviewed(&linked, saved, 2, true)
+            .is_err()
+    );
+    assert_eq!(
+        app.set_commit_file_reviewed(&linked, saved, 0, false)
+            .unwrap(),
+        [1]
+    );
+    assert_eq!(
+        app.list_projects().unwrap()[0].saved_reviews[0].reviewed_count,
+        1
+    );
+
+    let other = temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let unrelated = init_project(&other);
+    app.register_project(&unrelated).unwrap();
+    assert!(app.open_commit_review(&unrelated, saved).is_err());
+    assert!(
+        app.set_commit_file_reviewed(&unrelated, saved, 1, false)
+            .is_err()
+    );
+    assert_eq!(
+        app.open_commit_review(&main, saved).unwrap().reviewed_files,
+        [1]
+    );
+}

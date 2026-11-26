@@ -77,6 +77,7 @@ const project = {
   mainCheckout : main.path,
   worktrees    : [main, linked],
   worktreeError: null,
+  savedReviews : [],
 };
 const revisions = {
   branches: ["main", "topic"],
@@ -139,6 +140,10 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("topic");
   });
   expect(commands).toHaveBeenCalledWith("open_worktree", { checkout: linked.path });
+  expect(invoke).toHaveBeenCalledWith("read_category_settings", {
+    mainCheckout: main.path,
+    paths       : [],
+  });
 
   element(target, "aside ul button").click();
   await vi.waitFor(() => {
@@ -200,6 +205,7 @@ it("reopens a registered project and reports a comparison error", async () => {
     mainCheckout : "/tmp/offline",
     worktrees    : [],
     worktreeError: "Checkout is missing",
+    savedReviews : [],
   };
   const detached = {
     path  : linked.path,
@@ -237,5 +243,164 @@ it("reopens a registered project and reports a comparison error", async () => {
   element(target, "#compare button").click();
   await vi.waitFor(() => {
     expect(target.querySelector("[role=alert]")?.textContent).toBe("Unknown revision");
+  });
+});
+
+it("saves the displayed comparison and resumes shared review progress from another worktree", async () => {
+  const comparison = {
+    baseLabel  : "refs/heads/main",
+    targetLabel: "refs/heads/topic",
+    mode       : "divergence",
+    base       : "basetip",
+    start      : "ancestor",
+    end        : "topictip",
+    files      : [
+      {
+        status      : "A",
+        path        : "one.txt",
+        previousPath: null,
+        patch       : "+first\n",
+      },
+      {
+        status      : "A",
+        path        : "two.txt",
+        previousPath: null,
+        patch       : "+second\n",
+      },
+    ],
+  };
+  const commands = revisionCommands;
+  commands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(comparison)
+    .mockResolvedValueOnce(7)
+    .mockResolvedValueOnce([0])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce({
+      comparison,
+      reviewedFiles: [0],
+    })
+    .mockResolvedValueOnce([0, 1])
+    .mockResolvedValueOnce([0]);
+
+  const target = render();
+  await vi.waitFor(() => {
+    expect(target.querySelector("aside ul button")?.textContent).toContain("main");
+  });
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#base")).toBeTruthy();
+  });
+
+  input(target, "#base", "refs/heads/main");
+  input(target, "#target", "refs/heads/topic");
+  element(target, "#compare button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("pre")?.textContent).toBe("+first\n");
+  });
+
+  input(target, "#target", "HEAD");
+  element(target, "#save-review").click();
+  await vi.waitFor(() => {
+    const saved = target.querySelector("[aria-label='Saved commit reviews'] button");
+    expect(saved?.textContent).toContain("refs/heads/topic");
+  });
+  expect(commands).toHaveBeenLastCalledWith("save_commit_review", {
+    checkout: main.path,
+    comparison,
+  });
+
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
+  });
+  const file = "[aria-label='Changed files'] details button";
+  expect(element(target, file).textContent).toContain("Reviewed");
+
+  element(target, "aside ul li:nth-child(2) button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("pre")).toBeNull();
+  });
+  element(target, "[aria-label='Saved commit reviews'] button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("pre")?.textContent).toBe("+first\n");
+  });
+  expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
+    checkout: linked.path,
+    id      : 7,
+  });
+  expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+  expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
+
+  element(target, `${ file }:nth-of-type(2)`).click();
+  flushSync();
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
+  });
+  expect(element(target, "[aria-label='Saved commit reviews'] button").textContent).toContain("Reviewed");
+  expect(commands).toHaveBeenLastCalledWith("set_commit_file_reviewed", {
+    checkout : linked.path,
+    id       : 7,
+    fileIndex: 1,
+    reviewed : true,
+  });
+
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
+  });
+  expect(element(target, `${ file }:nth-of-type(2)`).textContent).toContain("Unreviewed");
+});
+
+it("opens a project's saved review directly after startup", async () => {
+  const summary = {
+    id           : 7,
+    baseLabel    : "main",
+    targetLabel  : "topic",
+    start        : "ancestor",
+    end          : "topictip",
+    fileCount    : 0,
+    reviewedCount: 0,
+  };
+  const comparison = {
+    baseLabel  : summary.baseLabel,
+    targetLabel: summary.targetLabel,
+    base       : "basetip",
+    mode       : "divergence",
+    start      : summary.start,
+    end        : summary.end,
+    files      : [],
+  };
+  const commands = revisionCommands;
+  commands
+    .mockResolvedValueOnce([
+      {
+        ...project,
+        savedReviews: [summary],
+      },
+    ])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce({
+      comparison,
+      reviewedFiles: [],
+    });
+
+  const target = render();
+  const reviewButton = "[aria-label='Saved commit reviews'] button";
+  await vi.waitFor(() => {
+    expect(target.querySelector(reviewButton)?.textContent).toContain("Reviewed");
+  });
+  element(target, reviewButton).click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
+  });
+  expect(target.querySelector<HTMLInputElement>("#target")?.value).toBe("topic");
+  expect(target.querySelector<HTMLSelectElement>("#mode")?.value).toBe("divergence");
+  expect(target.textContent).toContain("No changes between these commits.");
+  expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
+    checkout: main.path,
+    id      : 7,
   });
 });
