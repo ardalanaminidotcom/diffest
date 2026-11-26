@@ -1,3 +1,6 @@
+mod category_settings;
+
+use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
     Application, CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions,
     WorktreePatch,
@@ -90,6 +93,7 @@ pub fn run() {
         .setup(|app| {
             let database = app.path().app_data_dir()?.join("diffest.sqlite3");
             app.manage(Application::new(database));
+            app.manage(CategorySettings::new(&app.path().home_dir()?));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -101,7 +105,9 @@ pub fn run() {
             open_commit_review,
             set_commit_file_reviewed,
             open_worktree_review,
-            set_worktree_patch_reviewed
+            set_worktree_patch_reviewed,
+            category_settings::read_category_settings,
+            category_settings::save_category_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,3 +1,4 @@
+pub mod category_settings;
 mod git;
 mod reviews;
 mod worktree_review;

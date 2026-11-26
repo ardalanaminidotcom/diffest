@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { FileCategory } from "../lib/category-settings.js";
 import type {
   CommitReview,
   Comparison,
@@ -10,6 +11,8 @@ import type {
 } from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
+import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
+import CategorySettings from "../lib/category-settings.svelte";
 
 const statusLabels: Record<string, string> = {
   A: "Added",
@@ -38,6 +41,9 @@ let selectedIndex = $state(0);
 let files = $derived(worktreeReview ?? comparison?.files ?? []);
 let selectedFile = $derived(files[selectedIndex]);
 let selectedWorktreePatch = $derived(worktreeReview?.[selectedIndex]);
+let mainCheckout = $derived(projects.find(project => project.id === activeProjectId)?.mainCheckout);
+let paths = $derived(files.map(file => file.path));
+let categories = $state<FileCategory[]>([]);
 let error = $state("");
 let busy = $state(false);
 
@@ -119,13 +125,15 @@ function updateReview(id: number, displayed: Comparison, marks: number[]): void 
     fileCount    : displayed.files.length,
     reviewedCount: marks.length,
   };
-  projects = projects.map(project => (project.id === activeProjectId
-    ? {
-        ...project,
-        savedReviews: [...project.savedReviews.filter(item => item.id !== id), summary]
-          .toSorted((first, second) => second.id - first.id),
-      }
-    : project));
+  projects = projects.map((project) => {
+    if (project.id !== activeProjectId) return project;
+
+    return {
+      ...project,
+      savedReviews: [...project.savedReviews.filter(item => item.id !== id), summary]
+        .toSorted((first, second) => second.id - first.id),
+    };
+  });
 }
 
 function saveReview(displayed: Comparison): void {
@@ -257,6 +265,8 @@ function markWorktreePatch(patch: WorktreePatch): void {
       <p role="alert">{error}</p>
     {/if}
 
+    <CategorySettings {mainCheckout} {paths} bind:categories />
+
     {#if revisions}
       <form id="compare" onsubmit={compare}>
         <label for="base">Base
@@ -311,8 +321,9 @@ function markWorktreePatch(patch: WorktreePatch): void {
       {#if worktreeReview || comparison}
         {#if selectedFile}
           <div class="changes">
-            <nav aria-label="Changed files">
-              {#each files as file, index (index)}
+            <CategorizedFileTree {paths} {categories}>
+              {#snippet entry(index)}
+                {@const file = files[index]}
                 {@const worktreePatch = worktreeReview?.[index]}
                 <button type="button" aria-pressed={selectedIndex === index} onclick={() => selectedIndex = index}>
                   {#if worktreePatch}<small>{worktreePatch.side === "staged" ? "Staged" : "Unstaged"}</small>{/if}
@@ -325,8 +336,8 @@ function markWorktreePatch(patch: WorktreePatch): void {
                     <small>{(worktreePatch?.reviewed ?? reviewedFiles.has(index)) ? "Reviewed" : "Unreviewed"}</small>
                   {/if}
                 </button>
-              {/each}
-            </nav>
+              {/snippet}
+            </CategorizedFileTree>
             <div class="file-detail">
               {#if selectedWorktreePatch}
                 {@const patch = selectedWorktreePatch}
@@ -389,7 +400,7 @@ aside {
 h1 { margin: 0 0 1rem; font-size: 1.5rem; }
 h2 { margin: 1.25rem 0 0.25rem; font-size: 1rem; overflow-wrap: anywhere; }
 h3 { margin: 0.75rem 0 0.25rem; font-size: 0.85rem; }
-form, label, nav { display: grid; gap: 0.35rem; }
+form, label { display: grid; gap: 0.35rem; }
 label, small, .endpoints { font-size: 0.8rem; }
 ul { list-style: none; padding: 0; margin: 0; }
 
@@ -407,7 +418,7 @@ input, select, button {
 button:not(:disabled) { cursor: pointer; }
 button[aria-pressed="true"] { background: color-mix(in srgb, AccentColor 18%, Canvas); border-color: AccentColor; }
 li button { width: 100%; margin-block: 0.15rem; }
-li button, nav button { text-align: start; overflow-wrap: anywhere; }
+li button, .changes button { text-align: start; overflow-wrap: anywhere; }
 small { display: block; }
 
 #compare {

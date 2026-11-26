@@ -10,8 +10,29 @@ it("renders on the client for Tauri's static frontend", () => {
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+const revisionCommands = vi.fn();
 beforeEach(() => {
-  vi.mocked(invoke).mockReset();
+  revisionCommands.mockReset();
+  vi.mocked(invoke).mockImplementation(async (command, parameters) => {
+    if (command !== "read_category_settings") return revisionCommands(command, parameters);
+
+    const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
+    const paths: unknown[] = Array.isArray(filePaths) ? filePaths : [];
+    return {
+      global: {
+        path   : "/home/demo/.diffest/settings.json",
+        version: "missing",
+        error  : null,
+        custom : false,
+        rules  : [],
+      },
+      project   : null,
+      categories: paths.map(path => ({
+        category   : path === "after.txt" ? "Tests" : "Other",
+        subcategory: path === "after.txt" ? "Unit" : null,
+      })),
+    };
+  });
 });
 
 function render(): HTMLDivElement {
@@ -69,7 +90,7 @@ const revisions = {
 };
 
 it("opens the added checkout, switches worktrees, and renders the selected unified patch", async () => {
-  const commands = vi.mocked(invoke);
+  const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce({
@@ -119,6 +140,10 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("topic");
   });
   expect(commands).toHaveBeenCalledWith("open_worktree", { checkout: linked.path });
+  expect(invoke).toHaveBeenCalledWith("read_category_settings", {
+    mainCheckout: main.path,
+    paths       : [],
+  });
 
   element(target, "aside ul button").click();
   await vi.waitFor(() => {
@@ -139,8 +164,13 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     mode    : "between",
   });
   expect(target.textContent).toContain("def456");
-  const rename = element(target, "[aria-label='Changed files'] button:nth-of-type(2)");
+  await vi.waitFor(() => {
+    const groups = target.querySelectorAll("[aria-label='Changed files'] summary");
+    expect([...groups].map(group => group.textContent)).toEqual(["Other", "Tests", "Unit"]);
+  });
+  const rename = element(target, "[aria-label='Changed files'] details details button");
   expect(rename.textContent).toContain("before.txt");
+  expect(rename.textContent).toContain("Renamed");
   rename.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
@@ -185,7 +215,7 @@ it("reopens a registered project and reports a comparison error", async () => {
     ...project,
     worktrees: [main, detached],
   };
-  vi.mocked(invoke)
+  revisionCommands
     .mockResolvedValueOnce([registered, offline])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
@@ -239,7 +269,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
       },
     ],
   };
-  const commands = vi.mocked(invoke);
+  const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
@@ -285,7 +315,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
   });
-  const file = "[aria-label='Changed files'] button";
+  const file = "[aria-label='Changed files'] details button";
   expect(element(target, file).textContent).toContain("Reviewed");
 
   element(target, "aside ul li:nth-child(2) button").click();
@@ -343,7 +373,7 @@ it("opens a project's saved review directly after startup", async () => {
     end        : summary.end,
     files      : [],
   };
-  const commands = vi.mocked(invoke);
+  const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([
       {
@@ -391,7 +421,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     side       : "unstaged",
     fingerprint: "unstaged",
   };
-  const commands = vi.mocked(invoke);
+  const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
