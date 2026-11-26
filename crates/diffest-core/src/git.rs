@@ -1,9 +1,20 @@
-use crate::{ChangedFile, Commit, Revisions, Worktree};
+use crate::{ChangedFile, Commit, PatchSide, PatchVersion, Revisions, Worktree, WorktreePatch};
+use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     iter::once,
     path::{Path, PathBuf},
     process::Command,
 };
+
+const PATCH_OPTIONS: &[&str] = &[
+    "--color=never",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--submodule=short",
+    "--ignore-submodules=none",
+    "--unified=3",
+];
 
 fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
@@ -12,6 +23,7 @@ fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .env_remove("GIT_DIR")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args);
     #[cfg(windows)]
@@ -23,7 +35,9 @@ fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = command
         .output()
         .map_err(|error| format!("Cannot run Git in {}: {error}", directory.display()))?;
-    if output.status.success() {
+    if output.status.success()
+        || (args.starts_with(&["diff", "--no-index"]) && output.status.code() == Some(1))
+    {
         Ok(output.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -50,6 +64,10 @@ pub(crate) fn checkout_root(directory: &Path) -> Result<PathBuf, String> {
 
 pub(crate) fn common_directory(checkout: &Path) -> Result<PathBuf, String> {
     resolve_path(checkout, "--git-common-dir")
+}
+
+pub(crate) fn worktree_directory(checkout: &Path) -> Result<PathBuf, String> {
+    resolve_path(checkout, "--absolute-git-dir")
 }
 
 pub(crate) fn worktrees(
@@ -171,52 +189,259 @@ pub(crate) fn compare_commits(
     start: &str,
     end: &str,
 ) -> Result<Vec<ChangedFile>, String> {
-    let output = git(
-        checkout,
-        &[
-            "diff",
-            "--patch-with-raw",
-            "-z",
-            "--find-renames",
-            "--color=never",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--submodule=short",
-            "--ignore-submodules=none",
-            "--unified=3",
-            start,
-            end,
-            "--",
-        ],
-    )?;
-    let output = String::from_utf8_lossy(&output);
-    parse_patch(&output).ok_or_else(|| "Unexpected output from Git diff".into())
+    let mut args = vec!["diff", "--patch-with-raw", "-z", "--find-renames"];
+    args.extend(PATCH_OPTIONS);
+    args.extend([start, end, "--"]);
+    let output = git(checkout, &args)?;
+    Ok(parse_patch(&output)?
+        .into_iter()
+        .map(RawPatch::file)
+        .collect())
 }
 
-fn parse_patch(output: &str) -> Option<Vec<ChangedFile>> {
+pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>, String> {
+    let unmerged = git(checkout, &["ls-files", "--unmerged", "-z"])?;
+    let mut conflicts = BTreeMap::<&[u8], Vec<&[u8]>>::new();
+    for record in unmerged
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or("Unexpected output from Git ls-files --unmerged")?;
+        conflicts
+            .entry(&record[tab + 1..])
+            .or_default()
+            .push(&record[..tab]);
+    }
+
+    let mut patches = Vec::new();
+    for (side, option) in [
+        (PatchSide::Staged, "--cached"),
+        (PatchSide::Unstaged, "--ours"),
+    ] {
+        let mut args = vec![
+            "diff",
+            option,
+            "--diff-filter=u",
+            "--find-renames",
+            "--ita-invisible-in-index",
+        ];
+        args.extend(["--patch-with-raw", "-z", "--full-index", "--abbrev=64"]);
+        args.extend(PATCH_OPTIONS);
+        args.push("--");
+        let output = git(checkout, &args)?;
+        for raw in parse_patch(&output)? {
+            if !conflicts.contains_key(raw.path) {
+                patches.push(raw.worktree_patch(side, None)?);
+            }
+        }
+    }
+
+    let untracked = git(
+        checkout,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    for path in untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if path.ends_with(b"/") {
+            // An untracked nested repository is reported as a directory by ls-files.
+            continue;
+        }
+        let path = worktree_path(path)?;
+        let operand = if path == "-" { "./-" } else { path };
+        let mut args = vec![
+            "diff",
+            "--no-index",
+            "--patch-with-raw",
+            "-z",
+            "--full-index",
+            "--abbrev=64",
+        ];
+        args.extend(PATCH_OPTIONS);
+        args.extend(["--", "/dev/null", operand]);
+        let output = git(checkout, &args)?;
+        for raw in parse_patch(&output)? {
+            patches.push(raw.worktree_patch(PatchSide::Unstaged, Some(path))?);
+        }
+    }
+
+    for (path, stages) in conflicts {
+        let path = worktree_path(path)?;
+        let stage = if stages.iter().any(|stage| stage.ends_with(b" 2")) {
+            "--ours"
+        } else if stages.iter().any(|stage| stage.ends_with(b" 3")) {
+            "--theirs"
+        } else {
+            "--base"
+        };
+        let mut args = vec![
+            "--literal-pathspecs",
+            "diff",
+            stage,
+            "--diff-filter=u",
+            "--patch",
+            "--full-index",
+        ];
+        args.extend(PATCH_OPTIONS);
+        args.extend(["--", path]);
+        let output = git(checkout, &args)?;
+        let mut patch = WorktreePatch {
+            file: ChangedFile {
+                status: 'U',
+                path: path.into(),
+                previous_path: None,
+                patch: if output.is_empty() {
+                    "Unmerged path".into()
+                } else {
+                    String::from_utf8_lossy(&output).into()
+                },
+            },
+            side: PatchSide::Unstaged,
+            fingerprint: String::new(),
+            before: None,
+            after: None,
+            reviewed: false,
+        };
+        patch.fingerprint = fingerprint(&patch, &stages, &output);
+        patches.push(patch);
+    }
+    Ok(patches)
+}
+
+fn worktree_path(path: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(path).map_err(|_| "Git worktree paths must be UTF-8".into())
+}
+
+fn fingerprint(patch: &WorktreePatch, extra: &[&[u8]], diff: &[u8]) -> String {
+    let mut hash = Sha256::new();
+    hash.update([patch.side as u8, patch.file.status as u8]);
+    for field in [
+        Some(patch.file.path.as_str()),
+        patch.file.previous_path.as_deref(),
+    ] {
+        hash.update(field.unwrap_or_default());
+        hash.update([0]);
+    }
+    for version in [&patch.before, &patch.after] {
+        if let Some(version) = version {
+            hash.update(&version.mode);
+            hash.update(&version.object_id);
+        }
+        hash.update([0]);
+    }
+    for field in extra {
+        hash.update(field);
+        hash.update([0]);
+    }
+    hash.update(diff);
+    format!("{:x}", hash.finalize())
+}
+
+struct RawPatch<'a> {
+    header: &'a str,
+    status: char,
+    path: &'a [u8],
+    previous_path: Option<&'a [u8]>,
+    patch: &'a [u8],
+}
+
+impl RawPatch<'_> {
+    fn file(self) -> ChangedFile {
+        ChangedFile {
+            status: self.status,
+            path: String::from_utf8_lossy(self.path).into(),
+            previous_path: self
+                .previous_path
+                .map(|path| String::from_utf8_lossy(path).into()),
+            patch: String::from_utf8_lossy(self.patch).into(),
+        }
+    }
+
+    fn worktree_patch(self, side: PatchSide, path: Option<&str>) -> Result<WorktreePatch, String> {
+        let mut fields = self.header.trim_start_matches(':').split_whitespace();
+        let [old_mode, new_mode, old_id, new_id] =
+            std::array::from_fn(|_| fields.next().unwrap_or_default());
+        let before = version(old_mode, old_id);
+        let mut after_id = new_id;
+        if new_mode != "000000" && new_id.bytes().all(|byte| byte == b'0') {
+            // The raw record has no object ID for the working tree. A mode-only patch
+            // omits the index line because its content stayed the same.
+            after_id = self
+                .patch
+                .split(|byte| *byte == b'\n')
+                .find_map(|line| {
+                    let index = line.strip_prefix(b"index ")?;
+                    let index = std::str::from_utf8(index).ok()?.split_whitespace().next()?;
+                    let (_, id) = index.split_once("..")?;
+                    id.bytes().any(|byte| byte != b'0').then_some(id)
+                })
+                .unwrap_or(old_id);
+        }
+        let after = version(new_mode, after_id);
+        let diff = self.patch;
+        worktree_path(self.path)?;
+        self.previous_path.map(worktree_path).transpose()?;
+        let mut file = self.file();
+        if let Some(path) = path {
+            file.path = path.into();
+        }
+        let mut patch = WorktreePatch {
+            file,
+            side,
+            fingerprint: String::new(),
+            before,
+            after,
+            reviewed: false,
+        };
+        patch.fingerprint = fingerprint(&patch, &[], diff);
+        Ok(patch)
+    }
+}
+
+fn version(mode: &str, object_id: &str) -> Option<PatchVersion> {
+    (mode != "000000").then(|| PatchVersion {
+        mode: mode.into(),
+        object_id: object_id.into(),
+    })
+}
+
+fn parse_patch(output: &[u8]) -> Result<Vec<RawPatch<'_>>, String> {
+    parse_raw_patch(output).ok_or_else(|| "Unexpected output from Git diff".into())
+}
+
+fn parse_raw_patch(output: &[u8]) -> Option<Vec<RawPatch<'_>>> {
     if output.is_empty() {
         return Some(Vec::new());
     }
     // Git emits NUL-delimited raw records followed by the unified patches in the same order.
-    let (records, patch) = output.split_once("\0\0")?;
-    if !patch.starts_with("diff --git ") {
+    let separator = output.windows(2).position(|bytes| bytes == b"\0\0")?;
+    let records = &output[..separator];
+    let patch = &output[separator + 2..];
+    if !patch.starts_with(b"diff --git ") {
         return None;
     }
     let mut offsets = once(0)
         .chain(
             patch
-                .match_indices("\ndiff --git ")
+                .windows(b"\ndiff --git ".len())
+                .enumerate()
+                .filter(|(_, bytes)| *bytes == b"\ndiff --git ")
                 .map(|(offset, _)| offset + 1),
         )
         .chain(once(patch.len()))
         .peekable();
-    let mut records = records.split('\0');
+    let mut records = records.split(|byte| *byte == 0);
     let mut files = Vec::new();
     while let Some(header) = records.next() {
+        let header = std::str::from_utf8(header).ok()?;
         let status = header.split_whitespace().last()?.chars().next()?;
         let first_path = records.next()?;
         let (previous_path, path) = if matches!(status, 'R' | 'C') {
-            (Some(first_path.into()), records.next()?)
+            (Some(first_path), records.next()?)
         } else {
             (None, first_path)
         };
@@ -226,11 +451,12 @@ fn parse_patch(output: &str) -> Option<Vec<ChangedFile>> {
             offsets.next()?;
         }
         let end = *offsets.peek()?;
-        files.push(ChangedFile {
+        files.push(RawPatch {
+            header,
             status,
-            path: path.into(),
+            path,
             previous_path,
-            patch: patch[start..end].into(),
+            patch: &patch[start..end],
         });
     }
     (offsets.next()? == patch.len()).then_some(files)

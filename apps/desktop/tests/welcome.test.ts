@@ -374,3 +374,87 @@ it("opens a project's saved review directly after startup", async () => {
     id      : 7,
   });
 });
+
+it("reviews separate staged and unstaged patches and refreshes the active worktree", async () => {
+  const staged = {
+    status      : "M",
+    path        : "shared.txt",
+    previousPath: null,
+    patch       : "-committed\n+index\n",
+    side        : "staged",
+    fingerprint : "staged",
+    reviewed    : false,
+  };
+  const unstaged = {
+    ...staged,
+    patch      : "-index\n+worktree\n",
+    side       : "unstaged",
+    fingerprint: "unstaged",
+  };
+  const commands = vi.mocked(invoke);
+  commands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([staged, unstaged])
+    .mockResolvedValueOnce([
+      staged,
+      {
+        ...unstaged,
+        reviewed: true,
+      },
+    ])
+    .mockResolvedValueOnce([
+      staged,
+      {
+        ...unstaged,
+        status     : "U",
+        fingerprint: "changed",
+        patch      : "+updated\n",
+      },
+    ])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([]);
+
+  const target = render();
+  const worktree = "aside ul button";
+  const files = "[aria-label='Changed files'] button";
+  await vi.waitFor(() => {
+    expect(target.querySelector(worktree)?.textContent).toContain("main");
+  });
+  element(target, worktree).click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#worktree-review")).toBeTruthy();
+  });
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("pre")?.textContent).toBe(staged.patch);
+  });
+  expect(element(target, files).textContent).toContain("Staged");
+  const unstagedEntry = element(target, `${ files }:nth-of-type(2)`);
+  expect(unstagedEntry.textContent).toContain("Unstaged");
+  unstagedEntry.click();
+  flushSync();
+  expect(target.querySelector("pre")?.textContent).toBe(unstaged.patch);
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
+  });
+  expect(commands).toHaveBeenLastCalledWith("set_worktree_patch_reviewed", {
+    checkout   : main.path,
+    fingerprint: "unstaged",
+    reviewed   : true,
+  });
+
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => {
+    expect(element(target, "#review-progress").textContent).toBe("0 of 2 reviewed");
+  });
+  expect(element(target, `${ files }:nth-of-type(2)`).textContent).toContain("Conflicted");
+  expect(target.querySelector("pre")?.textContent).toBe("+updated\n");
+
+  element(target, "aside ul li:nth-child(2) button").click();
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain("No uncommitted changes.");
+  });
+  expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: linked.path });
+});

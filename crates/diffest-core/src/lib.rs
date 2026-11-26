@@ -1,7 +1,9 @@
 mod git;
 mod reviews;
+mod worktree_review;
 
 pub use reviews::{CommitReview, CommitReviewSummary};
+pub use worktree_review::{PatchSide, PatchVersion, WorktreePatch};
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -210,6 +212,7 @@ impl Application {
                 )",
             )?;
             connection.execute_batch(reviews::SCHEMA)?;
+            connection.execute_batch(worktree_review::SCHEMA)?;
             Ok::<_, rusqlite::Error>(connection)
         };
         open_database().map_err(|error| format!("Cannot open {}: {error}", self.database.display()))

@@ -36,6 +36,12 @@ interface ChangedFile {
   patch: string;
 }
 
+interface WorktreePatch extends ChangedFile {
+  side: "staged" | "unstaged";
+  fingerprint: string;
+  reviewed: boolean;
+}
+
 interface Comparison {
   baseLabel: string;
   targetLabel: string;
@@ -63,4 +69,4 @@ interface CommitReview {
 
 type ComparisonMode = "between" | "divergence";
 
-export type { CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions };
+export type { CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions, WorktreePatch };

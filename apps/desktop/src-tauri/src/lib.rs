@@ -1,5 +1,6 @@
 use diffest_core::{
     Application, CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions,
+    WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -65,6 +66,24 @@ async fn set_commit_file_reviewed(
     app.set_commit_file_reviewed(&checkout, id, file_index, reviewed)
 }
 
+#[tauri::command]
+async fn open_worktree_review(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+) -> Result<Vec<WorktreePatch>, String> {
+    app.open_worktree_review(&checkout)
+}
+
+#[tauri::command]
+async fn set_worktree_patch_reviewed(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    fingerprint: String,
+    reviewed: bool,
+) -> Result<Vec<WorktreePatch>, String> {
+    app.set_worktree_patch_reviewed(&checkout, &fingerprint, reviewed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -80,7 +99,9 @@ pub fn run() {
             compare_revisions,
             save_commit_review,
             open_commit_review,
-            set_commit_file_reviewed
+            set_commit_file_reviewed,
+            open_worktree_review,
+            set_worktree_patch_reviewed
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

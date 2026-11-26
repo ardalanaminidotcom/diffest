@@ -1,4 +1,4 @@
-use diffest_core::{Application, ComparisonMode};
+use diffest_core::{Application, ComparisonMode, PatchSide};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -25,6 +25,141 @@ fn init_project(directory: &Path) -> PathBuf {
     git(&main, &["init", "-b", "main"]);
     configure_user(&main);
     main.canonicalize().unwrap()
+}
+
+#[test]
+fn ongoing_review_tracks_each_patch_in_its_worktree_and_preserves_only_current_marks() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    fs::write(main.join(".gitignore"), "*.local\n").unwrap();
+    fs::write(main.join("shared.local"), "committed\n").unwrap();
+    git(&main, &["add", ".gitignore"]);
+    git(&main, &["add", "-f", "shared.local"]);
+    git(&main, &["commit", "-m", "Initial commit"]);
+    git(&main, &["worktree", "add", "-b", "topic", "../linked"]);
+    let linked = temp.path().join("linked");
+    for checkout in [&main, &linked] {
+        fs::write(checkout.join("shared.local"), "index\n").unwrap();
+        git(checkout, &["add", "shared.local"]);
+        fs::write(checkout.join("shared.local"), "worktree\n").unwrap();
+        fs::write(checkout.join("new file.txt"), "new content\n").unwrap();
+        fs::write(checkout.join("ignore-me.local"), "hidden\n").unwrap();
+    }
+
+    let database = temp.path().join("diffest.sqlite3");
+    let app = Application::new(database.clone());
+    app.register_project(&main).unwrap();
+    let patches = app.open_worktree_review(&main).unwrap();
+    assert_eq!(patches.len(), 3);
+    let staged = &patches[0];
+    let unstaged = &patches[1];
+    let added = &patches[2];
+    assert_eq!(staged.side, PatchSide::Staged);
+    assert_eq!(unstaged.side, PatchSide::Unstaged);
+    assert_eq!(added.side, PatchSide::Unstaged);
+    assert_eq!(staged.file.path, "shared.local");
+    assert_eq!(unstaged.file.path, "shared.local");
+    assert!(staged.file.patch.contains("-committed\n+index\n"));
+    assert!(unstaged.file.patch.contains("-index\n+worktree\n"));
+    assert_eq!(staged.after, unstaged.before);
+    assert_eq!(
+        staged.after.as_ref().unwrap().object_id,
+        git(&main, &["rev-parse", ":shared.local"])
+    );
+    assert_eq!(added.file.status, 'A');
+    assert_eq!(added.file.path, "new file.txt");
+    assert!(added.file.patch.contains("+new content\n"));
+    assert_eq!(added.before, None);
+    assert_eq!(
+        added.after.as_ref().unwrap().object_id,
+        git(&main, &["hash-object", "new file.txt"])
+    );
+
+    let marked = app
+        .set_worktree_patch_reviewed(&main, &staged.fingerprint, true)
+        .unwrap();
+    assert!(marked[0].reviewed);
+    assert!(!marked[1].reviewed);
+    app.set_worktree_patch_reviewed(&main, &unstaged.fingerprint, true)
+        .unwrap();
+    app.set_worktree_patch_reviewed(&main, &added.fingerprint, true)
+        .unwrap();
+    assert!(
+        app.open_worktree_review(&linked)
+            .unwrap()
+            .iter()
+            .all(|patch| !patch.reviewed)
+    );
+    drop(app);
+
+    let app = Application::new(database);
+    assert!(
+        app.open_worktree_review(&main)
+            .unwrap()
+            .iter()
+            .all(|patch| patch.reviewed)
+    );
+    fs::write(main.join("shared.local"), "new worktree contents\n").unwrap();
+    let refreshed = app
+        .set_worktree_patch_reviewed(&main, &unstaged.fingerprint, true)
+        .unwrap();
+    assert!(refreshed[0].reviewed);
+    assert!(!refreshed[1].reviewed);
+    assert!(refreshed[2].reviewed);
+    assert_ne!(refreshed[1].fingerprint, unstaged.fingerprint);
+    let refreshed = app
+        .set_worktree_patch_reviewed(&main, &staged.fingerprint, false)
+        .unwrap();
+    assert!(!refreshed[0].reviewed);
+    assert!(refreshed[2].reviewed);
+
+    fs::write(main.join("shared.local"), "worktree\n").unwrap();
+    assert!(!app.open_worktree_review(&main).unwrap()[1].reviewed);
+}
+
+#[test]
+fn conflicts_and_binary_changes_remain_reviewable_and_lose_marks_when_edited() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    fs::write(main.join("conflict.txt"), "base\n").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Initial commit"]);
+    git(&main, &["switch", "-c", "topic"]);
+    fs::write(main.join("conflict.txt"), "topic\n").unwrap();
+    git(&main, &["commit", "-am", "Topic edit"]);
+    git(&main, &["switch", "main"]);
+    fs::write(main.join("conflict.txt"), "main\n").unwrap();
+    git(&main, &["commit", "-am", "Main edit"]);
+    let merge = Command::new("git")
+        .current_dir(&main)
+        .args(["merge", "topic"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success());
+    fs::write(main.join("binary.bin"), b"\0a").unwrap();
+
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    assert_eq!(patches.len(), 2);
+    let binary = &patches[0];
+    assert_eq!(binary.file.path, "binary.bin");
+    assert!(binary.file.patch.contains("Binary files"));
+    let conflict = &patches[1];
+    assert_eq!(conflict.side, PatchSide::Unstaged);
+    assert_eq!(conflict.file.path, "conflict.txt");
+    assert_eq!(conflict.file.status, 'U');
+    assert!(conflict.file.patch.contains("<<<<<<< HEAD"));
+    for patch in &patches {
+        app.set_worktree_patch_reviewed(&main, &patch.fingerprint, true)
+            .unwrap();
+    }
+    fs::write(main.join("binary.bin"), b"\0b").unwrap();
+    fs::write(main.join("conflict.txt"), "main\n").unwrap();
+    let refreshed = app.open_worktree_review(&main).unwrap();
+    assert_eq!(refreshed.len(), 2);
+    assert_ne!(refreshed[0].after, binary.after);
+    assert_eq!(refreshed[1].file.status, 'U');
+    assert!(refreshed.iter().all(|patch| !patch.reviewed));
 }
 
 fn configure_user(main: &Path) {

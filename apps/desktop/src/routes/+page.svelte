@@ -1,5 +1,13 @@
 <script lang="ts">
-import type { CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions } from "../lib/revisions.js";
+import type {
+  CommitReview,
+  Comparison,
+  ComparisonMode,
+  Project,
+  Registration,
+  Revisions,
+  WorktreePatch,
+} from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
 
@@ -9,6 +17,7 @@ const statusLabels: Record<string, string> = {
   M: "Modified",
   R: "Renamed",
   T: "Type changed",
+  U: "Conflicted",
 };
 
 type ReviewProgress = Pick<CommitReview, "reviewedFiles"> & { id: number; };
@@ -23,9 +32,12 @@ let target = $state("HEAD");
 let mode = $state<ComparisonMode>("between");
 let comparison = $state<Comparison | null>(null);
 let review = $state<ReviewProgress | null>(null);
+let worktreeReview = $state<WorktreePatch[] | null>(null);
 let reviewedFiles = $derived(new Set(review?.reviewedFiles));
 let selectedIndex = $state(0);
-let selectedFile = $derived(comparison?.files[selectedIndex]);
+let files = $derived(worktreeReview ?? comparison?.files ?? []);
+let selectedFile = $derived(files[selectedIndex]);
+let selectedWorktreePatch = $derived(worktreeReview?.[selectedIndex]);
 let error = $state("");
 let busy = $state(false);
 
@@ -47,8 +59,10 @@ onMount(() => {
   });
 });
 
-async function openWorktree(path: string, projectId: number): Promise<void> {
-  revisions = await invoke<Revisions>("open_worktree", { checkout: path });
+async function openWorktree(path: string, projectId: number, ongoing = worktreeReview !== null): Promise<void> {
+  const nextRevisions = await invoke<Revisions>("open_worktree", { checkout: path });
+  const patches = ongoing ? await invoke<WorktreePatch[]>("open_worktree_review", { checkout: path }) : null;
+  revisions = nextRevisions;
   activeCheckout = path;
   activeProjectId = projectId;
   base = "";
@@ -56,6 +70,8 @@ async function openWorktree(path: string, projectId: number): Promise<void> {
   mode = "between";
   comparison = null;
   review = null;
+  worktreeReview = patches;
+  selectedIndex = 0;
 }
 
 function addProject(event: SubmitEvent): void {
@@ -80,6 +96,7 @@ function compare(event: SubmitEvent): void {
       mode,
     });
     review = null;
+    worktreeReview = null;
     selectedIndex = 0;
   });
 }
@@ -126,7 +143,7 @@ function openReview(project: Project, id: number): void {
   if (!path) return;
 
   void run(async () => {
-    if (path !== activeCheckout) await openWorktree(path, project.id);
+    if (path !== activeCheckout) await openWorktree(path, project.id, false);
 
     const saved = await invoke<CommitReview>("open_commit_review", {
       checkout: path,
@@ -136,6 +153,7 @@ function openReview(project: Project, id: number): void {
     base = comparison.baseLabel;
     target = comparison.targetLabel;
     mode = comparison.mode;
+    worktreeReview = null;
     selectedIndex = 0;
     updateReview(id, comparison, saved.reviewedFiles);
   });
@@ -150,6 +168,33 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
       reviewed: !reviewedFiles.has(fileIndex),
     });
     updateReview(id, displayed, marks);
+  });
+}
+
+function showWorktreeReview(patches: WorktreePatch[]): void {
+  const selected = selectedWorktreePatch;
+  const index = patches.findIndex(patch => patch.side === selected?.side && patch.path === selected.path);
+  selectedIndex = Math.max(0, index);
+  worktreeReview = patches;
+  comparison = null;
+  review = null;
+}
+
+function refreshWorktreeReview(): void {
+  void run(async () => {
+    const patches = await invoke<WorktreePatch[]>("open_worktree_review", { checkout: activeCheckout });
+    showWorktreeReview(patches);
+  });
+}
+
+function markWorktreePatch(patch: WorktreePatch): void {
+  void run(async () => {
+    const patches = await invoke<WorktreePatch[]>("set_worktree_patch_reviewed", {
+      checkout   : activeCheckout,
+      fingerprint: patch.fingerprint,
+      reviewed   : !patch.reviewed,
+    });
+    showWorktreeReview(patches);
   });
 }
 </script>
@@ -207,7 +252,7 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
     {/each}
   </aside>
 
-  <section class="workspace" aria-label="Revision comparison" aria-busy={busy}>
+  <section class="workspace" aria-label="Review workspace" aria-busy={busy}>
     {#if error}
       <p role="alert">{error}</p>
     {/if}
@@ -240,7 +285,17 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
         <button disabled={busy}>Compare</button>
       </form>
 
-      {#if comparison}
+      <button id="worktree-review" type="button" onclick={refreshWorktreeReview} disabled={busy}>
+        {worktreeReview ? "Refresh uncommitted changes" : "Review uncommitted changes"}
+      </button>
+
+      {#if worktreeReview}
+        {#if worktreeReview.length}
+          <p id="review-progress" role="status">
+            {reviewStatus(worktreeReview.length, worktreeReview.filter(patch => patch.reviewed).length)}
+          </p>
+        {/if}
+      {:else if comparison}
         {@const displayed = comparison}
         <dl class="endpoints">
           <dt>Effective start</dt><dd><code>{comparison.start}</code></dd>
@@ -251,23 +306,36 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
         {:else}
           <button id="save-review" type="button" onclick={() => saveReview(displayed)} disabled={busy}>Save review</button>
         {/if}
+      {/if}
+
+      {#if worktreeReview || comparison}
         {#if selectedFile}
           <div class="changes">
             <nav aria-label="Changed files">
-              {#each comparison.files as file, index (index)}
+              {#each files as file, index (index)}
+                {@const worktreePatch = worktreeReview?.[index]}
                 <button type="button" aria-pressed={selectedIndex === index} onclick={() => selectedIndex = index}>
+                  {#if worktreePatch}<small>{worktreePatch.side === "staged" ? "Staged" : "Unstaged"}</small>{/if}
                   <small>{statusLabels[file.status] ?? file.status}</small>
                   {#if file.previousPath}
                     {file.previousPath} →
                   {/if}
                   {file.path}
-                  {#if review}<small>{reviewedFiles.has(index) ? "Reviewed" : "Unreviewed"}</small>{/if}
+                  {#if worktreePatch || review}
+                    <small>{(worktreePatch?.reviewed ?? reviewedFiles.has(index)) ? "Reviewed" : "Unreviewed"}</small>
+                  {/if}
                 </button>
               {/each}
             </nav>
             <div class="file-detail">
-              {#if review}
+              {#if selectedWorktreePatch}
+                {@const patch = selectedWorktreePatch}
+                <button id="review-file" type="button" onclick={() => markWorktreePatch(patch)} disabled={busy}>
+                  {patch.reviewed ? "Clear review mark" : "Mark as reviewed"}
+                </button>
+              {:else if review && comparison}
                 {@const current = review}
+                {@const displayed = comparison}
                 <button
                   id="review-file"
                   type="button"
@@ -281,11 +349,11 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
             </div>
           </div>
         {:else}
-          <p>No changes between these commits.</p>
+          <p>{worktreeReview ? "No uncommitted changes." : "No changes between these commits."}</p>
         {/if}
       {/if}
     {:else}
-      <p>Open a worktree to compare revisions.</p>
+      <p>Open a worktree to review changes or compare revisions.</p>
     {/if}
   </section>
 </main>
@@ -350,6 +418,7 @@ small { display: block; }
 }
 
 #compare label { flex: 1 1 9rem; min-width: 0; }
+#worktree-review { margin-block-start: 0.65rem; }
 .endpoints { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.65rem; }
 dd { margin: 0; overflow-wrap: anywhere; }
 
