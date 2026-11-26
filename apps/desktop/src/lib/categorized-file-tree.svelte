@@ -52,7 +52,15 @@ const groups = $derived.by(() => {
 </nav>
 
 <style>
-nav, .entries { display: grid; gap: 0.35rem; }
-.entries { margin-inline-start: 0.5rem; margin-block: 0.35rem; }
-summary { cursor: pointer; font-size: 0.85rem; overflow-wrap: anywhere; }
+nav { display: grid; gap: 0.55rem; padding: 0.2rem 0.4rem 0.75rem; }
+.entries { display: grid; gap: 0.12rem; }
+.entries details { padding-inline-start: 0.5rem; }
+summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  padding: 0.25rem 0.35rem;
+}
 </style>

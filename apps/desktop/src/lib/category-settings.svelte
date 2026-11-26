@@ -81,37 +81,39 @@ async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }
 
 <details class="category-settings">
   <summary>Settings</summary>
-  {#if settings}
-    <label for="default-diff-layout">Default diff layout</label>
-    <select
-      id="default-diff-layout"
-      value={defaultLayout}
-      onchange={changeLayout}
-      disabled={savingLayout || !settings.global.version}>
-      <option value="unified">Unified</option>
-      <option value="split">Split</option>
-    </select>
-  {/if}
-  <p>Rules use repository-relative globs. The first match wins. Use <code>**</code> to match across folders.</p>
-  <p>In JSON, set <code>categoryRules</code> to an array of rules with <code>glob</code>, <code>category</code>, and an optional <code>subcategory</code>.</p>
-  {#if settings}
-    <CategoryRuleForm
-      scope="Global"
-      parent="built-in"
-      tier={settings.global}
-      {refresh}
-      save={(version, rules) => save(null, version, rules)} />
-    {#if mainCheckout && loadedCheckout === mainCheckout && settings.project}
-      {#key mainCheckout}
-        <CategoryRuleForm
-          scope="Project"
-          parent="global"
-          tier={settings.project}
-          {refresh}
-          save={(version, rules) => save(mainCheckout ?? null, version, rules)} />
-      {/key}
+  <div class="settings-panel">
+    {#if settings}
+      <label for="default-diff-layout">Default diff layout</label>
+      <select
+        id="default-diff-layout"
+        value={defaultLayout}
+        onchange={changeLayout}
+        disabled={savingLayout || !settings.global.version}>
+        <option value="unified">Unified</option>
+        <option value="split">Split</option>
+      </select>
     {/if}
-  {/if}
+    <p>Rules use repository-relative globs. The first match wins. Use <code>**</code> to match across folders.</p>
+    <p>In JSON, set <code>categoryRules</code> to an array of rules with <code>glob</code>, <code>category</code>, and an optional <code>subcategory</code>.</p>
+    {#if settings}
+      <CategoryRuleForm
+        scope="Global"
+        parent="built-in"
+        tier={settings.global}
+        {refresh}
+        save={(version, rules) => save(null, version, rules)} />
+      {#if mainCheckout && loadedCheckout === mainCheckout && settings.project}
+        {#key mainCheckout}
+          <CategoryRuleForm
+            scope="Project"
+            parent="global"
+            tier={settings.project}
+            {refresh}
+            save={(version, rules) => save(mainCheckout ?? null, version, rules)} />
+        {/key}
+      {/if}
+    {/if}
+  </div>
 </details>
 
 {#if error}
@@ -125,13 +127,36 @@ async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }
 {/if}
 
 <style>
-.category-settings { margin-block-end: 1rem; }
-summary { cursor: pointer; }
+summary {
+  cursor: pointer;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.3rem 0.52rem;
+  font-size: 0.85rem;
+  list-style: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary:hover, details[open] > summary { background: var(--selection); }
+.settings-panel {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  inset: 100% 0 auto auto;
+  width: min(100%, 34rem);
+  max-height: calc(100dvh - 5rem);
+  overflow: auto;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 0 8px;
+  box-shadow: 0 6px 18px #0002;
+}
 label, select { margin-block-start: 0.65rem; }
 select {
   font: inherit;
   color: inherit;
-  background: Canvas;
+  background: var(--canvas);
   border: 1px solid var(--border);
   border-radius: 0.35rem;
   padding: 0.35rem 0.45rem;

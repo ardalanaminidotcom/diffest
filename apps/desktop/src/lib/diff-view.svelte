@@ -1,155 +1,136 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { DiffLayout } from "./revisions.js";
-
-interface Line {
-  number: number;
-  text: string;
-  changed: boolean;
-}
-
-interface Row {
-  heading?: string;
-  before?: Line;
-  after?: Line;
-}
+import hljs from "highlight.js/lib/common";
+import { parsePatch, splitHunk } from "./patch.js";
 
 interface Properties {
   patch: string;
+  path: string;
+  previousPath: string | null;
   layout: DiffLayout;
 }
 
-let { patch, layout }: Properties = $props();
+const highlightPatchLimit = 100_000;
+const highlightLineLimit = 2000;
 
-function splitPatch(text: string): Row[] {
-  const result: Row[] = [];
-  let before: Line[] = [];
-  let after: Line[] = [];
-  let previous: Line[] = [];
-  let oldNumber = 0;
-  let newNumber = 0;
-  let inHunk = false;
-
-  function flush(): void {
-    for (let index = 0; index < Math.max(before.length, after.length); index++) {
-      result.push({
-        before: before[index],
-        after : after[index],
-      });
-    }
-    before = [];
-    after = [];
-  }
-
-  for (const line of text.replace(/\n$/u, "").split("\n")) {
-    const range = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line);
-    if (range) {
-      flush();
-      result.push({ heading: line });
-      oldNumber = Number(range[1]);
-      newNumber = Number(range[2]);
-      inHunk = true;
-    } else if (inHunk) {
-      const content = line.slice(1);
-      if (line.startsWith("-")) {
-        const removed = {
-          number : oldNumber++,
-          text   : content,
-          changed: true,
-        };
-        before.push(removed);
-        previous = [removed];
-      } else if (line.startsWith("+")) {
-        const added = {
-          number : newNumber++,
-          text   : content,
-          changed: true,
-        };
-        after.push(added);
-        previous = [added];
-      } else if (line === "" || line.startsWith(" ")) {
-        flush();
-        const oldLine = {
-          number : oldNumber++,
-          text   : content,
-          changed: false,
-        };
-        const newLine = {
-          number : newNumber++,
-          text   : content,
-          changed: false,
-        };
-        result.push({
-          before: oldLine,
-          after : newLine,
-        });
-        previous = [oldLine, newLine];
-      } else if (line.startsWith("\\")) {
-        for (const side of previous) side.text += `\n${ line }`;
-      } else {
-        flush();
-        inHunk = false;
-      }
-    }
-  }
-  flush();
-  return result;
+function languageFor(filename: string): string {
+  const basename = filename.slice(filename.lastIndexOf("/") + 1).toLowerCase();
+  if (basename === "dockerfile") return "dockerfile";
+  if (basename === "makefile") return "makefile";
+  const extension = basename.includes(".") ? basename.split(".").at(-1) ?? "" : "";
+  return extension === "svelte" || extension === "vue" ? "xml" : extension;
 }
 
-let rows = $derived(layout === "split" ? splitPatch(patch) : []);
+let { patch, path, previousPath, layout }: Properties = $props();
+const parsed = $derived(parsePatch(patch));
+const metadata = $derived(parsed.headers.join("\n").trimEnd());
+const beforeLanguage = $derived(languageFor(previousPath ?? path));
+const afterLanguage = $derived(languageFor(path));
+
+function highlight(text: string, language: string): string | null {
+  // Keep very large patches and long generated lines readable without tokenizing them on the UI thread.
+  if (patch.length > highlightPatchLimit || text.length > highlightLineLimit) return null;
+  if (!hljs.getLanguage(language)) return null;
+  return hljs.highlight(text, { language }).value;
+}
 </script>
 
-{#if rows.length}
-  <table aria-label="Split patch">
-    <colgroup><col class="number" /><col /></colgroup>
-    <colgroup><col class="number" /><col /></colgroup>
-    <thead><tr><th scope="colgroup" colspan="2">Before</th><th scope="colgroup" colspan="2">After</th></tr></thead>
+{#snippet source(text: string, language: string)}
+  {@const formatted = highlight(text, language)}
+  <code>{#if formatted !== null}{@html formatted}{:else}{text}{/if}</code>
+{/snippet}
+
+{#if parsed.hunks.length}
+  <table aria-label={layout === "split" ? "Split patch" : "Unified patch"} class:split={layout === "split"}>
+    {#if layout === "split"}
+      <colgroup><col class="number" /><col /></colgroup>
+      <colgroup><col class="number" /><col /></colgroup>
+      <thead><tr><th scope="colgroup" colspan="2">Before</th><th scope="colgroup" colspan="2">After</th></tr></thead>
+    {:else}
+      <colgroup><col class="number" /><col class="number" /><col /></colgroup>
+    {/if}
     <tbody>
-      {#each rows as row}
-        {#if row.heading}
-          <tr><th class="hunk" colspan="4"><code>{row.heading}</code></th></tr>
+      {#each parsed.hunks as hunk}
+        <tr><th class="hunk" colspan={layout === "split" ? 4 : 3}><code>{hunk.heading}</code></th></tr>
+        {#if layout === "split"}
+          {#each splitHunk(hunk.lines) as row}
+            <tr>
+              <td class="line-number" class:removed={row.before?.change}>{row.before?.before}</td>
+              <td class="line" class:removed={row.before?.change} class:blank={!row.before}>
+                {#if row.before}{@render source(row.before.text, beforeLanguage)}{/if}
+              </td>
+              <td class="line-number" class:added={row.after?.change}>{row.after?.after}</td>
+              <td class="line" class:added={row.after?.change} class:blank={!row.after}>
+                {#if row.after}{@render source(row.after.text, afterLanguage)}{/if}
+              </td>
+            </tr>
+          {/each}
         {:else}
-          <tr>
-            <td class="line-number" class:removed={row.before?.changed}>{row.before?.number}</td>
-            <td class:removed={row.before?.changed}><code>{row.before?.text}</code></td>
-            <td class="line-number" class:added={row.after?.changed}>{row.after?.number}</td>
-            <td class:added={row.after?.changed}><code>{row.after?.text}</code></td>
-          </tr>
+          {#each hunk.lines as line}
+            <tr class:removed={line.change === "removed"} class:added={line.change === "added"}>
+              <td class="line-number">{line.before}</td>
+              <td class="line-number">{line.after}</td>
+              <td class="line" class:removed={line.change === "removed"} class:added={line.change === "added"}>
+                {@render source(line.text, line.change === "removed" ? beforeLanguage : afterLanguage)}
+              </td>
+            </tr>
+          {/each}
         {/if}
       {/each}
     </tbody>
   </table>
+  {#if metadata}
+    <details><summary>Patch headers</summary><pre>{metadata}</pre></details>
+  {/if}
 {:else}
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
-  <pre aria-label="Unified patch" tabindex="0">{patch}</pre>
+  {#if patch}
+    {#if parsed.tooManyLines}<p class="raw-notice">Large patch · Showing raw text</p>{/if}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
+    <pre aria-label="Unified patch" tabindex="0">{patch}</pre>
+  {/if}
 {/if}
 
 <style>
-pre {
-  margin: 0;
-  padding: 0.75rem;
-  overflow: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  line-height: 1.45;
+table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+th, td { padding: 0; text-align: start; vertical-align: top; }
+thead th {
+  padding: 0.35rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
 }
-
-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  border: 1px solid var(--border);
+.split th + th, .split td:nth-child(3) { border-inline-start: 1px solid var(--border); }
+.hunk {
+  padding: 0.2rem 0.75rem;
+  color: var(--muted);
   background: var(--surface);
-  font-size: 0.85rem;
+  border-block: 1px solid var(--border);
+  font-weight: 400;
 }
-
-th, td { padding: 0.2rem 0.35rem; text-align: start; vertical-align: top; }
-th, .line-number:nth-child(3) { border-inline-start: 1px solid var(--border); }
-thead th, .hunk { border-block-end: 1px solid var(--border); }
-code { white-space: pre-wrap; overflow-wrap: anywhere; }
-.number { width: 4ch; }
-.line-number { color: color-mix(in srgb, CanvasText 75%, Canvas); font-variant-numeric: tabular-nums; text-align: end; }
-.removed { background: color-mix(in srgb, #d33846 22%, Canvas); }
-.added { background: color-mix(in srgb, #289b55 22%, Canvas); }
+pre, table { font: 0.875rem/1.55 ui-monospace, "SF Mono", Consolas, monospace; }
+code { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+.number { width: 3.75em; }
+.line-number { padding-inline-end: 0.4rem; color: var(--muted); text-align: end; font-variant-numeric: tabular-nums; }
+.line { position: relative; padding-inline: 1.35rem 0.5rem; }
+.line::before { position: absolute; inset-inline-start: 0.3rem; }
+.line.added::before { content: "+"; color: var(--added-ink); }
+.line.removed::before { content: "−"; color: var(--removed-ink); }
+.added { background: var(--added); }
+.removed { background: var(--removed); }
+.added .line-number:nth-child(2), .line-number.added { color: var(--added-ink); }
+.removed .line-number:first-child, .line-number.removed { color: var(--removed-ink); }
+.added > .line-number:first-child, .line-number.added { box-shadow: inset 1px 0 var(--added-ink); }
+.removed > .line-number:first-child, .line-number.removed { box-shadow: inset 1px 0 var(--removed-ink); }
+.blank { background: var(--surface); }
+details { padding: 0.55rem 0.75rem; border-block-start: 1px solid var(--border); color: var(--muted); }
+summary { cursor: pointer; }
+pre { margin: 0; padding: 0.75rem; overflow: auto; }
+details pre { padding-inline: 0; }
+.raw-notice { margin: 0; padding: 0.35rem 0.75rem; color: var(--muted); background: var(--surface); }
+code :global(.hljs-keyword), code :global(.hljs-selector-tag), code :global(.hljs-literal) { color: var(--syntax-keyword); }
+code :global(.hljs-title), code :global(.hljs-tag), code :global(.hljs-attr), code :global(.hljs-built_in) { color: var(--syntax-name); }
+code :global(.hljs-string), code :global(.hljs-regexp) { color: var(--syntax-string); }
+code :global(.hljs-number), code :global(.hljs-symbol) { color: var(--syntax-number); }
+code :global(.hljs-comment) { color: var(--muted); }
 </style>
