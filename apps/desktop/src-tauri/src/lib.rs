@@ -8,7 +8,7 @@ use diffest_core::{
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 async fn list_projects(app: State<'_, Application>) -> Result<Vec<Project>, String> {
@@ -19,21 +19,21 @@ async fn list_projects(app: State<'_, Application>) -> Result<Vec<Project>, Stri
 async fn register_project(
     handle: AppHandle,
     app: State<'_, Application>,
-    checkout: PathBuf,
-) -> Result<Registration, String> {
-    let checkout = checkout
+) -> Result<Option<Registration>, String> {
+    let Some(folder) = handle
+        .dialog()
+        .file()
+        .set_title("Select a Git checkout")
+        .blocking_pick_folder()
+    else {
+        return Ok(None);
+    };
+    let checkout = folder
+        .into_path()
+        .map_err(|error| format!("Cannot open checkout: {error}"))?
         .canonicalize()
         .map_err(|error| format!("Cannot open checkout: {error}"))?;
-    let confirmed = handle
-        .dialog()
-        .message(format!("Add this local Git checkout?\n\n{checkout:?}"))
-        .title("Add Diffest project")
-        .buttons(MessageDialogButtons::OkCancel)
-        .blocking_show();
-    if !confirmed {
-        return Err("Project registration canceled.".into());
-    }
-    app.register_project(&checkout)
+    app.register_project(&checkout).map(Some)
 }
 
 #[tauri::command]

@@ -44,7 +44,6 @@ type OpenReview
 /* eslint-enable @stylistic/key-spacing */
 
 let projects = $state<Project[]>([]);
-let checkout = $state("");
 let activeCheckout = $state("");
 let activeProjectId = $state<number>();
 let revisions = $state<Revisions>();
@@ -68,7 +67,6 @@ let paths = $derived(files.map(file => file.path));
 let categories = $state<FileCategory[]>([]);
 let error = $state("");
 let busy = $state(false);
-let checkoutOpen = $state(false);
 let savedReviewsOpen = $state(false);
 let compareOpen = $state(false);
 let filesCollapsed = $state(false);
@@ -144,15 +142,13 @@ async function openWorktree(path: string, projectId: number, loadChanges = true)
   selectFile(0);
 }
 
-function addProject(event: SubmitEvent): void {
-  event.preventDefault();
+function addProject(): void {
   void run(async () => {
-    const registration = await invoke<Registration>("register_project", { checkout });
+    const registration = await invoke<Registration | null>("register_project");
+    if (registration === null) return;
     const { project } = registration;
     projects = [...projects.filter(item => item.id !== project.id), project]
       .toSorted((first, second) => first.id - second.id);
-    checkout = "";
-    checkoutOpen = false;
     await openWorktree(registration.checkout, project.id);
   });
 }
@@ -330,16 +326,6 @@ function stageWorktreePatch(patch: WorktreePatch): void {
       <span class="project-name">Local Git review</span>
     {/if}
     <div class="workspace-actions">
-      <details name="workspace-menu" class="toolbar-disclosure" bind:open={checkoutOpen}>
-        <summary>Add checkout</summary>
-        <div class="toolbar-panel">
-          <form id="add-checkout" onsubmit={addProject}>
-            <label for="checkout">Checkout folder</label>
-            <input id="checkout" bind:value={checkout} placeholder="Local Git checkout path" required />
-            <button disabled={busy}>Add checkout</button>
-          </form>
-        </div>
-      </details>
       {#if projects.some(project => project.savedReviews.length > 0)}
         <details name="workspace-menu" class="toolbar-disclosure saved-reviews" bind:open={savedReviewsOpen}>
           <summary>Saved reviews</summary>
@@ -383,7 +369,13 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 
   <div class="workspace-shell">
     <aside id="projects" aria-label="Projects">
-      <div class="panel-label">Projects</div>
+      <div class="panel-label">
+        <span>Projects</span>
+        <button class="icon-button" type="button" aria-label="Add checkout" title="Add checkout"
+          onclick={addProject} disabled={busy}>
+          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" /></svg>
+        </button>
+      </div>
       {#each projects as project (project.id)}
         <section aria-label={project.name}>
           <h2 title={project.mainCheckout ?? project.name}>{project.name}</h2>
@@ -700,7 +692,7 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
 .workspace { position: relative; display: flex; flex-direction: column; }
 .workspace:has(.empty-state) { overflow: auto; }
 #projects { overflow: auto; padding: 0.85rem; background: var(--surface); border-inline-end: 1px solid var(--border); }
-.panel-label { font-weight: 700; margin-block-end: 0.75rem; }
+.panel-label { display: flex; align-items: center; justify-content: space-between; gap: 0.45rem; font-weight: 700; margin-block-end: 0.75rem; }
 aside h2, .saved-reviews h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
 aside ul, .saved-reviews ul { list-style: none; padding: 0; margin: 0; }
 aside li + li, .saved-reviews li + li { margin-block-start: 0.2rem; }

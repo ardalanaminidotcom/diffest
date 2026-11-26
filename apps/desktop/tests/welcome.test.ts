@@ -114,6 +114,7 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
   const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(null)
     .mockResolvedValueOnce({
       project,
       checkout: linked.path,
@@ -151,14 +152,22 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     });
 
   const target = render();
+  const addCheckout = "#projects button[aria-label='Add checkout']";
   expect(target.querySelector("main h1")?.textContent).toBe("Diffest");
   await vi.waitFor(() => {
-    expect(target.querySelector<HTMLButtonElement>("#add-checkout button")?.disabled).toBe(false);
+    expect(target.querySelector<HTMLButtonElement>(addCheckout)?.disabled).toBe(false);
   });
 
-  element(target, ".toolbar-disclosure > summary").click();
-  input(target, "#checkout", linked.path);
-  element(target, "#add-checkout button").click();
+  element(target, addCheckout).click();
+  flushSync();
+  await vi.waitFor(() => {
+    expect(commands).toHaveBeenCalledTimes(2);
+    expect(target.querySelector<HTMLButtonElement>(addCheckout)?.disabled).toBe(false);
+  });
+  expect(invoke).toHaveBeenLastCalledWith("register_project");
+  expect(target.querySelector("#projects ul")).toBeNull();
+  expect(target.querySelector("[role='alert']")).toBeNull();
+  element(target, addCheckout).click();
   await vi.waitFor(() => {
     expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("topic");
   });
@@ -271,9 +280,7 @@ it("reopens a registered project and reports a comparison error", async () => {
     expect(target.querySelector("#base")).toBeTruthy();
   });
   expect(target.textContent).toContain("Checkout is missing");
-  element(target, ".toolbar-disclosure > summary").click();
-  input(target, "#checkout", detached.path);
-  element(target, "#add-checkout button").click();
+  element(target, "#projects button[aria-label='Add checkout']").click();
   await vi.waitFor(() => {
     expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("Detached HEAD");
   });
