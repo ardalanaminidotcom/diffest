@@ -17,6 +17,15 @@ includeWorkspaceRoot: false
 
 injectWorkspacePackages: true
 
+# svelte-check 4 requires TypeScript 6 for its default CLI mode.
+packageExtensions:
+  svelte-check@4.7.8:
+    dependencies:
+      typescript: "6.0.3"
+
+overrides:
+  "svelte-check@4.7.8>typescript:peer": "-"
+
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
 
