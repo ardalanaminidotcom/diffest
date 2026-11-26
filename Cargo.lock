@@ -561,6 +561,7 @@ dependencies = [
 name = "diffest-core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "glob",
  "rusqlite",
  "serde",

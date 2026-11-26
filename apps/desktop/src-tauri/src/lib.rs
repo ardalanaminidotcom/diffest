@@ -2,8 +2,8 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions,
-    WorktreePatch,
+    Application, CommitReview, Comparison, ComparisonMode, FileDetails, FileDetailsSource, Project,
+    Registration, Revisions, WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -87,6 +87,15 @@ async fn set_worktree_patch_reviewed(
     app.set_worktree_patch_reviewed(&checkout, &fingerprint, reviewed)
 }
 
+#[tauri::command]
+async fn read_file_details(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    source: FileDetailsSource,
+) -> Result<FileDetails, String> {
+    app.file_details(&checkout, source)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -106,6 +115,7 @@ pub fn run() {
             set_commit_file_reviewed,
             open_worktree_review,
             set_worktree_patch_reviewed,
+            read_file_details,
             category_settings::read_category_settings,
             category_settings::save_category_settings,
         ])

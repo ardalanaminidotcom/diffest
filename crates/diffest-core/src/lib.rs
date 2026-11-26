@@ -1,8 +1,10 @@
 pub mod category_settings;
+mod file_details;
 mod git;
 mod reviews;
 mod worktree_review;
 
+pub use file_details::{FileDetails, FileDetailsSource};
 pub use reviews::{CommitReview, CommitReviewSummary};
 pub use worktree_review::{PatchSide, PatchVersion, WorktreePatch};
 

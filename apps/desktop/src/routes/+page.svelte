@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
 import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
 import CategorySettings from "../lib/category-settings.svelte";
+import FileDetails from "../lib/file-details.svelte";
 
 const statusLabels: Record<string, string> = {
   A: "Added",
@@ -354,6 +355,18 @@ function markWorktreePatch(patch: WorktreePatch): void {
                   disabled={busy}>
                   {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
                 </button>
+              {/if}
+              {#if selectedWorktreePatch}
+                <FileDetails checkout={activeCheckout} source={{ kind: "worktree", fingerprint: selectedWorktreePatch.fingerprint }} />
+              {:else if comparison}
+                <FileDetails checkout={activeCheckout} source={{
+                  kind: "comparison",
+                  start: comparison.start,
+                  end: comparison.end,
+                  path: selectedFile.path,
+                  previousPath: selectedFile.previousPath,
+                  status: selectedFile.status,
+                }} />
               {/if}
               <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
               <pre aria-label="Unified patch" tabindex="0">{selectedFile.patch}</pre>

@@ -1,4 +1,5 @@
-use diffest_core::{Application, ComparisonMode, PatchSide};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use diffest_core::{Application, ComparisonMode, FileDetailsSource, PatchSide};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -25,6 +26,157 @@ fn init_project(directory: &Path) -> PathBuf {
     git(&main, &["init", "-b", "main"]);
     configure_user(&main);
     main.canonicalize().unwrap()
+}
+
+#[test]
+fn file_details_use_the_index_between_the_committed_and_working_versions() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    let path = main.join("notes.txt");
+    fs::write(&path, "committed\n").unwrap();
+    git(&main, &["add", "notes.txt"]);
+    git(&main, &["commit", "-m", "Initial version"]);
+    fs::write(&path, "index\n").unwrap();
+    git(&main, &["add", "notes.txt"]);
+    fs::write(&path, "working tree\n").unwrap();
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    let sizes = |side| {
+        let patch = patches.iter().find(|patch| patch.side == side).unwrap();
+        let details = app
+            .file_details(
+                &main,
+                FileDetailsSource::Worktree {
+                    fingerprint: patch.fingerprint.clone(),
+                },
+            )
+            .unwrap();
+        (
+            details.before.unwrap().byte_size,
+            details.after.unwrap().byte_size,
+        )
+    };
+    assert_eq!(sizes(PatchSide::Staged), (Some(10), Some(6)));
+    assert_eq!(sizes(PatchSide::Unstaged), (Some(6), Some(13)));
+
+    let reviewed = patches
+        .iter()
+        .find(|patch| patch.side == PatchSide::Unstaged)
+        .unwrap();
+    fs::write(&path, "changed after opening\n").unwrap();
+    assert!(
+        app.file_details(
+            &main,
+            FileDetailsSource::Worktree {
+                fingerprint: reviewed.fingerprint.clone()
+            }
+        )
+        .is_err()
+    );
+}
+
+const GIF: &str = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII=";
+
+#[test]
+fn added_and_deleted_images_show_their_present_side_and_corrupt_images_keep_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    let gif = STANDARD.decode(GIF).unwrap();
+    let png = STANDARD.decode(PNG).unwrap();
+    fs::write(main.join("deleted.gif"), &gif).unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Original image"]);
+    fs::remove_file(main.join("deleted.gif")).unwrap();
+    fs::write(main.join("added.png"), &png).unwrap();
+    fs::write(main.join("broken.png"), "invalid image").unwrap();
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    assert_eq!(patches.len(), 3);
+    for patch in patches {
+        let details = app
+            .file_details(
+                &main,
+                FileDetailsSource::Worktree {
+                    fingerprint: patch.fingerprint,
+                },
+            )
+            .unwrap();
+        match patch.file.path.as_str() {
+            "deleted.gif" => {
+                assert!(details.after.is_none());
+                let before = details.before.unwrap();
+                assert_eq!(before.byte_size, Some(gif.len() as u64));
+                assert_eq!(before.format, Some("GIF"));
+                assert_eq!(before.preview, Some(format!("data:image/gif;base64,{GIF}")));
+            }
+            "added.png" => {
+                assert!(details.before.is_none());
+                let after = details.after.unwrap();
+                assert_eq!(after.byte_size, Some(png.len() as u64));
+                assert_eq!(after.format, Some("PNG"));
+                assert_eq!(after.preview, Some(format!("data:image/png;base64,{PNG}")));
+            }
+            "broken.png" => {
+                assert!(details.before.is_none());
+                let after = details.after.unwrap();
+                assert_eq!(after.byte_size, Some(13));
+                assert_eq!(after.format, Some("PNG"));
+                assert!(after.preview.is_none());
+            }
+            path => panic!("Unexpected patch for {path}"),
+        }
+    }
+}
+
+#[test]
+fn git_paired_rename_compares_both_paths_and_detects_their_actual_formats() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    fs::create_dir(main.join("images")).unwrap();
+    // Shared trailing bytes allow Git to pair the files while their image headers differ.
+    let padding = b"retained image metadata\n".repeat(64);
+    let gif = [STANDARD.decode(GIF).unwrap(), padding.clone()].concat();
+    let png = [STANDARD.decode(PNG).unwrap(), padding].concat();
+    fs::write(main.join("images/source.gif"), &gif).unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Original format"]);
+    fs::remove_file(main.join("images/source.gif")).unwrap();
+    fs::write(main.join("images/destination.png"), &png).unwrap();
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-m", "Rename and convert"]);
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    let comparison = app
+        .compare_revisions(&main, "HEAD^", "HEAD", ComparisonMode::Between)
+        .unwrap();
+    assert_eq!(comparison.files.len(), 1);
+    let file = comparison.files.into_iter().next().unwrap();
+    assert_eq!(file.status, 'R');
+    let details = app
+        .file_details(
+            &main,
+            FileDetailsSource::Comparison {
+                start: comparison.start,
+                end: comparison.end,
+                path: file.path,
+                previous_path: file.previous_path,
+                status: file.status,
+            },
+        )
+        .unwrap();
+    let before = details.before.unwrap();
+    let after = details.after.unwrap();
+    assert_eq!(before.path, "images/source.gif");
+    assert_eq!(before.format, Some("GIF"));
+    assert_eq!(before.byte_size, Some(gif.len() as u64));
+    assert_eq!(after.path, "images/destination.png");
+    assert_eq!(after.format, Some("PNG"));
+    assert_eq!(after.byte_size, Some(png.len() as u64));
+    assert!(before.preview.is_some() && after.preview.is_some());
 }
 
 #[test]
