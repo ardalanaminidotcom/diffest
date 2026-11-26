@@ -79,7 +79,7 @@ async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }
 
 <svelte:window onfocus={refresh} />
 
-<details class="category-settings">
+<details name="workspace-menu" class="category-settings">
   <summary>Settings</summary>
   <div class="settings-panel">
     {#if settings}
@@ -144,7 +144,7 @@ summary:hover, details[open] > summary { background: var(--selection); }
   box-sizing: border-box;
   inset: 100% 0 auto auto;
   width: min(100%, 34rem);
-  max-height: calc(100dvh - 5rem);
+  max-height: min(80dvh, calc(100dvh - 9rem));
   overflow: auto;
   padding: 0.85rem 1rem;
   background: var(--surface);

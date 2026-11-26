@@ -13,10 +13,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const revisionCommands = vi.fn();
 const layoutCommands = vi.fn();
 let defaultDiffLayout = "unified";
+let loadWorktreePatches = false;
 beforeEach(() => {
   revisionCommands.mockReset();
   layoutCommands.mockReset().mockResolvedValue(null);
   defaultDiffLayout = "unified";
+  loadWorktreePatches = false;
   vi.mocked(invoke).mockImplementation(async (command, parameters) => {
     if (command === "read_review_layout" || command === "set_review_layout") return layoutCommands(command, parameters);
     if (command === "save_default_diff_layout") {
@@ -30,6 +32,7 @@ beforeEach(() => {
       };
     }
 
+    if (command === "open_worktree_review" && !loadWorktreePatches) return [];
     if (command !== "read_category_settings") return revisionCommands(command, parameters);
 
     const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
@@ -153,6 +156,7 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     expect(target.querySelector<HTMLButtonElement>("#add-checkout button")?.disabled).toBe(false);
   });
 
+  element(target, ".toolbar-disclosure > summary").click();
   input(target, "#checkout", linked.path);
   element(target, "#add-checkout button").click();
   await vi.waitFor(() => {
@@ -267,6 +271,7 @@ it("reopens a registered project and reports a comparison error", async () => {
     expect(target.querySelector("#base")).toBeTruthy();
   });
   expect(target.textContent).toContain("Checkout is missing");
+  element(target, ".toolbar-disclosure > summary").click();
   input(target, "#checkout", detached.path);
   element(target, "#add-checkout button").click();
   await vi.waitFor(() => {
@@ -384,13 +389,12 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   const file = "[aria-label='Changed files'] details button";
   expect(element(target, file).textContent).toContain("Reviewed");
 
-  element(target, "[aria-controls='projects']").click();
-  flushSync();
   expect(element(target, "#projects").hidden).toBe(false);
   element(target, "aside ul li:nth-child(2) button").click();
   await vi.waitFor(() => {
     expect(target.querySelector("pre")).toBeNull();
   });
+  element(target, ".saved-reviews > summary").click();
   element(target, "[aria-label='Saved commit reviews'] button").click();
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe("+first\n");
@@ -462,6 +466,7 @@ it("opens a project's saved review directly after startup", async () => {
   await vi.waitFor(() => {
     expect(target.querySelector(reviewButton)?.textContent).toContain("Reviewed");
   });
+  element(target, ".saved-reviews > summary").click();
   element(target, reviewButton).click();
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
@@ -526,21 +531,25 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     .mockResolvedValueOnce([staged, reviewedConflict])
     .mockResolvedValueOnce([staged, refreshedConflict])
     .mockResolvedValueOnce(revisions)
-    .mockResolvedValueOnce([]);
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([staged]);
 
   const target = render();
+  loadWorktreePatches = true;
   const worktree = "aside ul button";
   const files = "[aria-label='Changed files'] button";
   await vi.waitFor(() => {
     expect(target.querySelector(worktree)?.textContent).toContain("main");
   });
+  expect(target.querySelector("#changed-files")).toBeNull();
   element(target, worktree).click();
   await vi.waitFor(() => {
     expect(target.querySelector("#worktree-review")).toBeTruthy();
   });
-  element(target, "#worktree-review").click();
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe(staged.patch);
+    expect(element(target, "#changed-files").hidden).toBe(false);
   });
   expect(element(target, files).textContent).toContain("Staged");
   const unstagedEntry = element(target, `${ files }:nth-of-type(2)`);
@@ -593,14 +602,21 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: main.path });
     expect(target.querySelector("pre")?.textContent).toBe(refreshedConflict.patch);
   });
-  element(target, "[aria-controls='projects']").click();
-  flushSync();
   expect(element(target, "#projects").hidden).toBe(false);
+  element(target, "[aria-label='Collapse file list']").click();
+  flushSync();
+  expect(element(target, "#changed-files").hidden).toBe(true);
   element(target, "aside ul li:nth-child(2) button").click();
   await vi.waitFor(() => {
     expect(target.textContent).toContain("No uncommitted changes.");
+    expect(target.querySelector("#changed-files")).toBeNull();
   });
   expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: linked.path });
+  element(target, worktree).click();
+  await vi.waitFor(() => {
+    expect(element(target, "#changed-files").hidden).toBe(false);
+    expect(target.querySelector("pre")?.textContent).toBe(staged.patch);
+  });
 });
 
 it("shows numbered changes and file counts, and restores the chosen split layout on refresh", async () => {
@@ -664,12 +680,12 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce(null)
     .mockResolvedValueOnce("split");
 
+  loadWorktreePatches = true;
   const target = render();
   await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector("#worktree-review")).toBeTruthy());
   expect(element(target, "#compare-setup").hidden).toBe(true);
-  element(target, "#worktree-review").click();
   await vi.waitFor(() => {
     const unified = element(target, "[aria-label='Unified patch']");
     expect(unified.querySelector(".hljs-keyword")?.textContent).toBe("const");
@@ -787,7 +803,7 @@ it("applies global layout changes to an inherited review and reopens an explicit
   element(target, "#save-review").click();
   const saved = "[aria-label='Saved commit reviews'] button";
   await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
-  element(target, "details > summary").click();
+  element(target, ".category-settings > summary").click();
   const select = target.querySelector<HTMLSelectElement>("#default-diff-layout");
   if (!select) throw new Error("Missing default diff layout");
   expect(select.value).toBe("unified");
@@ -804,10 +820,9 @@ it("applies global layout changes to an inherited review and reopens an explicit
     layout  : "unified",
   });
 
-  element(target, "[aria-controls='projects']").click();
-  flushSync();
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeNull());
+  element(target, ".saved-reviews > summary").click();
   element(target, saved).click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
   expect(select.value).toBe("split");

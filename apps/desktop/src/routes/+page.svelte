@@ -68,7 +68,8 @@ let paths = $derived(files.map(file => file.path));
 let categories = $state<FileCategory[]>([]);
 let error = $state("");
 let busy = $state(false);
-let projectsOpen = $state(false);
+let checkoutOpen = $state(false);
+let savedReviewsOpen = $state(false);
 let compareOpen = $state(false);
 let filesCollapsed = $state(false);
 let fileBody: HTMLDivElement | undefined = $state();
@@ -121,12 +122,13 @@ function readReviewLayout(path: string, id: number | null): Promise<DiffLayout |
   });
 }
 
-async function openWorktree(path: string, projectId: number, ongoing = worktreeReview !== null): Promise<void> {
+async function openWorktree(path: string, projectId: number, loadChanges = true): Promise<void> {
   const nextRevisions = await invoke<Revisions>("open_worktree", { checkout: path });
-  const patches = ongoing ? await invoke<WorktreePatch[]>("open_worktree_review", { checkout: path }) : null;
-  layoutOverride = ongoing ? await readReviewLayout(path, null) : null;
-  projectsOpen = false;
+  const patches = loadChanges ? await invoke<WorktreePatch[]>("open_worktree_review", { checkout: path }) : null;
+  const nextLayout = patches?.length ? await readReviewLayout(path, null) : null;
+  layoutOverride = nextLayout;
   compareOpen = false;
+  filesCollapsed = false;
   revisions = nextRevisions;
   activeCheckout = path;
   activeProjectId = projectId;
@@ -150,6 +152,7 @@ function addProject(event: SubmitEvent): void {
     projects = [...projects.filter(item => item.id !== project.id), project]
       .toSorted((first, second) => first.id - second.id);
     checkout = "";
+    checkoutOpen = false;
     await openWorktree(registration.checkout, project.id);
   });
 }
@@ -169,6 +172,7 @@ function compare(event: SubmitEvent): void {
       progress  : null,
     };
     layoutOverride = null;
+    filesCollapsed = false;
     compareOpen = false;
     selectFile(0);
   });
@@ -226,7 +230,8 @@ function openReview(project: Project, id: number): void {
     base = displayed.baseLabel;
     target = displayed.targetLabel;
     mode = displayed.mode;
-    projectsOpen = false;
+    savedReviewsOpen = false;
+    filesCollapsed = false;
     compareOpen = false;
     selectFile(0);
     updateReview(displayed, {
@@ -267,7 +272,10 @@ function refreshWorktreeReview(): void {
     const patches = await invoke<WorktreePatch[]>("open_worktree_review", { checkout: activeCheckout });
     layoutOverride = await readReviewLayout(activeCheckout, null);
     compareOpen = false;
-    if (!worktreeReview) selectFile(0);
+    if (!worktreeReview) {
+      filesCollapsed = false;
+      selectFile(0);
+    }
     showWorktreeReview(patches);
   });
 }
@@ -317,14 +325,50 @@ function stageWorktreePatch(patch: WorktreePatch): void {
     <h1><svg aria-hidden="true" viewBox="0 0 18 18" fill="none"><rect x="1.5" y="1.5" width="15" height="15" rx="3" /><path d="M6 7h6M9 4v6m-3 3h6" /></svg>Diffest</h1>
     {#if activeProject}
       <span class="project-name">{activeProject.name}</span>
-      <button class="branch" type="button" aria-expanded={projectsOpen || !openReviewState} aria-controls="projects"
-        title={activeCheckout} onclick={() => projectsOpen = !projectsOpen} disabled={!openReviewState}>
-        {activeBranch ?? "Detached HEAD"}
-      </button>
+      <span class="branch" title={activeCheckout}>{activeBranch ?? "Detached HEAD"}</span>
     {:else}
       <span class="project-name">Local Git review</span>
     {/if}
     <div class="workspace-actions">
+      <details name="workspace-menu" class="toolbar-disclosure" bind:open={checkoutOpen}>
+        <summary>Add checkout</summary>
+        <div class="toolbar-panel">
+          <form id="add-checkout" onsubmit={addProject}>
+            <label for="checkout">Checkout folder</label>
+            <input id="checkout" bind:value={checkout} placeholder="Local Git checkout path" required />
+            <button disabled={busy}>Add checkout</button>
+          </form>
+        </div>
+      </details>
+      {#if projects.some(project => project.savedReviews.length > 0)}
+        <details name="workspace-menu" class="toolbar-disclosure saved-reviews" bind:open={savedReviewsOpen}>
+          <summary>Saved reviews</summary>
+          <div class="toolbar-panel">
+            {#each projects as project (project.id)}
+              {#if project.savedReviews.length}
+                <section aria-label="Saved commit reviews">
+                  <h3>{project.name}</h3>
+                  <ul>
+                    {#each project.savedReviews as saved (saved.id)}
+                      <li>
+                        <button
+                          type="button"
+                          aria-pressed={review?.summary.id === saved.id}
+                          onclick={() => openReview(project, saved.id)}
+                          disabled={busy || !project.worktrees.length}>
+                          {saved.baseLabel} → {saved.targetLabel}
+                          <small><code>{saved.start.slice(0, 7)} → {saved.end.slice(0, 7)}</code></small>
+                          <small>{reviewStatus(saved.fileCount, saved.reviewedCount)}</small>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
+            {/each}
+          </div>
+        </details>
+      {/if}
       {#if revisions}
         <button type="button" aria-expanded={compareOpen} aria-controls="compare-setup"
           onclick={() => compareOpen = !compareOpen}>Compare revisions</button>
@@ -337,15 +381,9 @@ function stageWorktreePatch(patch: WorktreePatch): void {
     </div>
   </header>
 
-  <div class="workspace-shell" class:with-projects={!openReviewState}>
-    <aside id="projects" class:project-drawer={Boolean(openReviewState)} aria-label="Projects" hidden={Boolean(openReviewState) && !projectsOpen}>
+  <div class="workspace-shell">
+    <aside id="projects" aria-label="Projects">
       <div class="panel-label">Projects</div>
-      <form id="add-checkout" onsubmit={addProject}>
-        <label for="checkout">Checkout folder</label>
-        <input id="checkout" bind:value={checkout} placeholder="Local Git checkout path" required />
-        <button disabled={busy}>Add checkout</button>
-      </form>
-
       {#each projects as project (project.id)}
         <section aria-label={project.name}>
           <h2 title={project.mainCheckout ?? project.name}>{project.name}</h2>
@@ -366,26 +404,6 @@ function stageWorktreePatch(patch: WorktreePatch): void {
               </li>
             {/each}
           </ul>
-          {#if project.savedReviews.length}
-            <section aria-label="Saved commit reviews">
-              <h3>Saved commit reviews</h3>
-              <ul>
-                {#each project.savedReviews as saved (saved.id)}
-                  <li>
-                    <button
-                      type="button"
-                      aria-pressed={review?.summary.id === saved.id}
-                      onclick={() => openReview(project, saved.id)}
-                      disabled={busy || !project.worktrees.length}>
-                      {saved.baseLabel} → {saved.targetLabel}
-                      <small><code>{saved.start.slice(0, 7)} → {saved.end.slice(0, 7)}</code></small>
-                      <small>{reviewStatus(saved.fileCount, saved.reviewedCount)}</small>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            </section>
-          {/if}
         </section>
       {/each}
     </aside>
@@ -434,58 +452,6 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 
       {#if selectedFile}
         <div class="changes" class:files-collapsed={filesCollapsed}>
-          <div id="changed-files" class="file-list" hidden={filesCollapsed}>
-            <header class="file-list-header">
-              <div class="file-list-title"><strong>Files <span>{files.length}</span></strong>
-                {#if !filesCollapsed}
-                  <button class="icon-button" type="button" aria-label="Collapse file list" title="Collapse file list"
-                    aria-controls="changed-files" aria-expanded="true" bind:this={fileListToggle} onclick={toggleFiles}>
-                    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M6 3v10" /></svg>
-                  </button>
-                {/if}
-              </div>
-              {#if reviewedFileCount !== undefined}
-                <p id="review-progress" role="status">{reviewStatus(files.length, reviewedFileCount)}</p>
-                <progress aria-label="Review progress" value={reviewedFileCount} max={files.length}></progress>
-              {/if}
-            </header>
-            <CategorizedFileTree {paths} {categories}>
-              {#snippet entry(index)}
-                {@const file = files[index]}
-                {@const worktreePatch = worktreeReview?.[index]}
-                {@const checked = worktreePatch?.reviewed ?? reviewedFiles.has(index)}
-                {@const counts = changeCounts[index]}
-                <button class="file-row" type="button" aria-pressed={selectedIndex === index}
-                  title={file.previousPath ? `${ file.previousPath } → ${ file.path }` : file.path}
-                  onclick={() => selectFile(index)}>
-                  <span class="file-status" class:conflict={file.status === "U"} aria-hidden="true">{file.status}</span>
-                  <span class="sr-only">{statusLabels[file.status] ?? file.status}</span>
-                  <span class="file-label">
-                    <strong>{fileName(file.path)}</strong>
-                    {#if worktreePatch || file.previousPath || file.path.includes("/")}
-                      <small>
-                        {#if worktreePatch}{worktreePatch.side === "staged" ? "Staged" : "Unstaged"}{/if}
-                        {#if worktreePatch && (file.previousPath || file.path.includes("/"))}<span aria-hidden="true"> · </span>{/if}
-                        {#if file.previousPath}{file.previousPath} → {:else}{file.path.slice(0, file.path.lastIndexOf("/") + 1)}{/if}
-                      </small>
-                    {/if}
-                  </span>
-                  <span class="line-counts">
-                    {#if counts.added}<span class="additions">+{counts.added}</span>{/if}
-                    {#if counts.removed}<span class="deletions">−{counts.removed}</span>{/if}
-                  </span>
-                  {#if worktreePatch || review}
-                    <span class="review-mark" class:checked>
-                      <span class="sr-only">{checked ? "Reviewed" : "Unreviewed"}</span>
-                      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
-                        {#if checked}<path d="m3 8 3 3 7-7" />{:else}<circle cx="8" cy="8" r="4" />{/if}
-                      </svg>
-                    </span>
-                  {/if}
-                </button>
-              {/snippet}
-            </CategorizedFileTree>
-          </div>
           <section class="file-detail" aria-label="Selected file">
             <header class="file-header">
               {#if filesCollapsed}
@@ -579,6 +545,58 @@ function stageWorktreePatch(patch: WorktreePatch): void {
               {/if}
             </div>
           </section>
+          <aside id="changed-files" class="file-list" aria-label="File sidebar" hidden={filesCollapsed}>
+            <header class="file-list-header">
+              <div class="file-list-title"><strong>Files <span>{files.length}</span></strong>
+                {#if !filesCollapsed}
+                  <button class="icon-button" type="button" aria-label="Collapse file list" title="Collapse file list"
+                    aria-controls="changed-files" aria-expanded="true" bind:this={fileListToggle} onclick={toggleFiles}>
+                    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M6 3v10" /></svg>
+                  </button>
+                {/if}
+              </div>
+              {#if reviewedFileCount !== undefined}
+                <p id="review-progress" role="status">{reviewStatus(files.length, reviewedFileCount)}</p>
+                <progress aria-label="Review progress" value={reviewedFileCount} max={files.length}></progress>
+              {/if}
+            </header>
+            <CategorizedFileTree {paths} {categories}>
+              {#snippet entry(index)}
+                {@const file = files[index]}
+                {@const worktreePatch = worktreeReview?.[index]}
+                {@const checked = worktreePatch?.reviewed ?? reviewedFiles.has(index)}
+                {@const counts = changeCounts[index]}
+                <button class="file-row" type="button" aria-pressed={selectedIndex === index}
+                  title={file.previousPath ? `${ file.previousPath } → ${ file.path }` : file.path}
+                  onclick={() => selectFile(index)}>
+                  <span class="file-status" class:conflict={file.status === "U"} aria-hidden="true">{file.status}</span>
+                  <span class="sr-only">{statusLabels[file.status] ?? file.status}</span>
+                  <span class="file-label">
+                    <strong>{fileName(file.path)}</strong>
+                    {#if worktreePatch || file.previousPath || file.path.includes("/")}
+                      <small>
+                        {#if worktreePatch}{worktreePatch.side === "staged" ? "Staged" : "Unstaged"}{/if}
+                        {#if worktreePatch && (file.previousPath || file.path.includes("/"))}<span aria-hidden="true"> · </span>{/if}
+                        {#if file.previousPath}{file.previousPath} → {:else}{file.path.slice(0, file.path.lastIndexOf("/") + 1)}{/if}
+                      </small>
+                    {/if}
+                  </span>
+                  <span class="line-counts">
+                    {#if counts.added}<span class="additions">+{counts.added}</span>{/if}
+                    {#if counts.removed}<span class="deletions">−{counts.removed}</span>{/if}
+                  </span>
+                  {#if worktreePatch || review}
+                    <span class="review-mark" class:checked>
+                      <span class="sr-only">{checked ? "Reviewed" : "Unreviewed"}</span>
+                      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+                        {#if checked}<path d="m3 8 3 3 7-7" />{:else}<circle cx="8" cy="8" r="4" />{/if}
+                      </svg>
+                    </span>
+                  {/if}
+                </button>
+              {/snippet}
+            </CategorizedFileTree>
+          </aside>
         </div>
       {:else if openReviewState}
         <div class="empty-state">
@@ -650,27 +668,43 @@ h1 { display: flex; align-items: center; gap: 0.45rem; margin-inline-end: 0.35re
 h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1.4; }
 .project-name { color: var(--muted); overflow-wrap: anywhere; }
 .branch { max-width: min(18rem, 75vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.branch::after { content: " ▾"; color: var(--muted); }
+
 .workspace-actions { margin-inline-start: auto; }
+.toolbar-disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.3rem 0.52rem;
+  font-size: 0.85rem;
+}
+.toolbar-disclosure > summary::-webkit-details-marker { display: none; }
+.toolbar-disclosure[open] > summary { background: var(--selection); }
+.toolbar-panel {
+  position: absolute;
+  inset: 100% 0 auto auto;
+  z-index: 2;
+  box-sizing: border-box;
+  width: min(100%, 24rem);
+  max-height: min(65dvh, calc(100dvh - 9rem));
+  overflow: auto;
+  padding: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 0 8px;
+  box-shadow: 0 6px 18px #0002;
+}
 .workspace-shell, .workspace, .changes, .file-detail { min-width: 0; min-height: 0; }
-.workspace-shell { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); }
-.workspace-shell.with-projects { grid-template-columns: minmax(11rem, 22%) minmax(0, 1fr); }
+.workspace-shell { display: grid; grid-template-columns: minmax(10rem, 20%) minmax(0, 1fr); }
 .workspace { position: relative; display: flex; flex-direction: column; }
 .workspace:has(.empty-state) { overflow: auto; }
-aside { overflow: auto; padding: 0.85rem; background: var(--surface); border-inline-end: 1px solid var(--border); }
-.project-drawer {
-  position: absolute;
-  z-index: 2;
-  inset: 0 auto 0 0;
-  box-sizing: border-box;
-  width: min(85%, 17rem);
-  box-shadow: 6px 0 18px #0002;
-}
+#projects { overflow: auto; padding: 0.85rem; background: var(--surface); border-inline-end: 1px solid var(--border); }
 .panel-label { font-weight: 700; margin-block-end: 0.75rem; }
-aside h2, aside h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
-aside ul { list-style: none; padding: 0; margin: 0; }
-aside li + li { margin-block-start: 0.2rem; }
-aside li button {
+aside h2, .saved-reviews h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+aside ul, .saved-reviews ul { list-style: none; padding: 0; margin: 0; }
+aside li + li, .saved-reviews li + li { margin-block-start: 0.2rem; }
+aside li button, .saved-reviews li button {
   display: block;
   width: 100%;
   text-align: start;
@@ -678,7 +712,7 @@ aside li button {
   background: transparent;
   border-color: transparent;
 }
-aside small { display: block; }
+aside small, .saved-reviews small { display: block; }
 small, .endpoints, label { color: var(--muted); font-size: 0.85rem; }
 form, label { display: grid; gap: 0.35rem; min-width: 0; }
 button, input, select {
@@ -723,9 +757,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .empty-state h2 { font-size: 1.1rem; margin-block-end: 0.35rem; }
 .empty-state p { color: var(--muted); }
 
-.changes { flex: 1; display: grid; grid-template-columns: minmax(12rem, 27%) minmax(0, 1fr); }
+.changes { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 32%); }
 .changes.files-collapsed { grid-template-columns: minmax(0, 1fr); }
-.file-list { background: var(--surface); border-inline-end: 1px solid var(--border); overflow: auto; }
+.file-list { min-width: 0; background: var(--surface); border-inline-start: 1px solid var(--border); overflow: auto; }
 .file-list-header {
   position: sticky;
   top: 0;
@@ -798,10 +832,15 @@ progress::-moz-progress-bar { background: var(--accent); }
 .file-metadata summary { cursor: pointer; }
 .file-metadata[open] summary { margin-block-end: 0.65rem; }
 
-@media (max-width: 650px) {
-  .workspace-shell.with-projects { grid-template-columns: minmax(9rem, 27%) minmax(0, 1fr); }
-  .changes { grid-template-columns: minmax(8rem, 31%) minmax(0, 1fr); }
+@media (max-width: 520px) {
+  .workspace-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  #projects { max-block-size: 20dvh; border-inline-end: 0; border-block-end: 1px solid var(--border); }
+  .changes { grid-template-columns: minmax(0, 1fr) minmax(9rem, 34%); }
   .file-row { padding-inline: 0.22rem; gap: 0.24rem; }
   .line-counts { gap: 0.16rem; }
+}
+@media (max-height: 360px) {
+  .file-header { min-height: 0; overflow: auto; }
+  .file-body { min-height: min(38%, 3rem); }
 }
 </style>
