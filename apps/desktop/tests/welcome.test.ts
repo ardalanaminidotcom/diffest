@@ -14,6 +14,13 @@ const revisionCommands = vi.fn();
 beforeEach(() => {
   revisionCommands.mockReset();
   vi.mocked(invoke).mockImplementation(async (command, parameters) => {
+    if (command === "read_file_details") {
+      return {
+        before: null,
+        after : null,
+      };
+    }
+
     if (command !== "read_category_settings") return revisionCommands(command, parameters);
 
     const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
@@ -478,6 +485,13 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   unstagedEntry.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe(unstaged.patch);
+  expect(invoke).toHaveBeenCalledWith("read_file_details", {
+    checkout: main.path,
+    source  : {
+      kind       : "worktree",
+      fingerprint: "unstaged",
+    },
+  });
   expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
   element(target, "#review-file").click();
   await vi.waitFor(() => {
