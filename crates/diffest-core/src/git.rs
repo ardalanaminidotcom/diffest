@@ -14,6 +14,7 @@ use std::{
 
 const GIT_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DIFF_LIMIT: usize = 8 * 1024 * 1024;
+const WORKTREE_FILE_DIFF_LIMIT: usize = 512;
 const PATCH_LIMIT: usize = 1024 * 1024;
 const DIFF_SIZE_ERROR: &str = "The diff is too large to display. Compare a smaller set of changes.";
 const PATCH_SIZE_ERROR: &str = "A file patch exceeds the 1 MiB review limit. Compare a smaller change.";
@@ -371,6 +372,15 @@ pub(crate) fn uncommitted_patches_for(
         ],
         paths,
     )?;
+    let untracked_paths = untracked
+        .split(|byte| *byte == 0)
+        // Git lists an untracked nested repository as a directory.
+        .filter(|path| !path.is_empty() && !path.ends_with(b"/"));
+    if untracked_paths.clone().count() + conflicts.len() > WORKTREE_FILE_DIFF_LIMIT {
+        return Err(format!(
+            "Too many untracked or conflicted files to review (limit: {WORKTREE_FILE_DIFF_LIMIT})."
+        ));
+    }
     let trust_filemode = untracked.is_empty()
         || git(
             checkout,
@@ -382,14 +392,7 @@ pub(crate) fn uncommitted_patches_for(
                 "core.filemode",
             ],
         )? != b"false\n";
-    for path in untracked
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-    {
-        if path.ends_with(b"/") {
-            // An untracked nested repository is reported as a directory by ls-files.
-            continue;
-        }
+    for path in untracked_paths {
         let operand = os_path(if path == b"-" { b"./-" } else { path })?;
         let mut args = vec![
             "diff",

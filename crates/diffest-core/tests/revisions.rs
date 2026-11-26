@@ -880,3 +880,16 @@ fn selected_worktree_rename_keeps_both_file_versions() {
     assert_eq!(details.before.unwrap().path, "original.txt");
     assert_eq!(details.after.unwrap().path, "renamed.txt");
 }
+
+#[test]
+fn many_small_untracked_files_stop_worktree_review_before_diffing_each_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    for index in 0..513 {
+        fs::write(main.join(format!("untracked-{index}.txt")), "").unwrap();
+    }
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let error = app.open_worktree_review(&main).err().unwrap();
+    assert!(error.contains("Too many untracked or conflicted files"), "{error}");
+}
