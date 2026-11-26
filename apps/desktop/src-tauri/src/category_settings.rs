@@ -1,3 +1,4 @@
+use diffest_core::DiffLayout;
 use diffest_core::category_settings::{Categorization, CategoryRule, CategorySettings};
 use std::path::PathBuf;
 use tauri::State;
@@ -19,4 +20,13 @@ pub async fn save_category_settings(
     rules: Option<Vec<CategoryRule>>,
 ) -> Result<(), String> {
     settings.save(main_checkout.as_deref(), &version, rules)
+}
+
+#[tauri::command]
+pub async fn save_default_diff_layout(
+    settings: State<'_, CategorySettings>,
+    version: String,
+    layout: DiffLayout,
+) -> Result<(), String> {
+    settings.save_default_diff_layout(&version, layout)
 }

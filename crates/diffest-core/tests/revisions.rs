@@ -605,3 +605,60 @@ fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves()
         [1]
     );
 }
+
+#[test]
+fn layout_overrides_reopen_with_their_saved_review_or_worktree() {
+    use diffest_core::DiffLayout;
+
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    fs::write(main.join("changed.txt"), "before\n").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Before"]);
+    fs::write(main.join("changed.txt"), "after\n").unwrap();
+    git(&main, &["commit", "-am", "After"]);
+    git(&main, &["worktree", "add", "-b", "topic", "../linked"]);
+    let linked = temp.path().join("linked");
+
+    let database = temp.path().join("diffest.sqlite3");
+    let app = Application::new(database.clone());
+    app.register_project(&main).unwrap();
+    let comparison = app
+        .compare_revisions(&main, "HEAD^", "HEAD", ComparisonMode::Between)
+        .unwrap();
+    let first = app
+        .save_commit_review_with_layout(&main, &comparison, Some(DiffLayout::Split))
+        .unwrap();
+    let second = app.save_commit_review(&main, &comparison).unwrap();
+    app.set_review_layout(&main, Some(second), DiffLayout::Split)
+        .unwrap();
+    app.set_review_layout(&main, Some(second), DiffLayout::Unified)
+        .unwrap();
+    let inherited = app.save_commit_review(&main, &comparison).unwrap();
+    app.set_review_layout(&main, None, DiffLayout::Split)
+        .unwrap();
+    drop(app);
+
+    let app = Application::new(database);
+    assert_eq!(
+        app.read_review_layout(&linked, Some(first)).unwrap(),
+        Some(DiffLayout::Split)
+    );
+    assert_eq!(
+        app.read_review_layout(&linked, Some(second)).unwrap(),
+        Some(DiffLayout::Unified)
+    );
+    assert_eq!(
+        app.read_review_layout(&linked, Some(inherited)).unwrap(),
+        None
+    );
+    assert_eq!(
+        app.read_review_layout(&main, None).unwrap(),
+        Some(DiffLayout::Split)
+    );
+    assert_eq!(app.read_review_layout(&linked, None).unwrap(), None);
+    assert!(
+        app.set_review_layout(&linked, Some(999), DiffLayout::Split)
+            .is_err()
+    );
+}

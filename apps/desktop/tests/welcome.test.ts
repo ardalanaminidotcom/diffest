@@ -11,9 +11,18 @@ it("renders on the client for Tauri's static frontend", () => {
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const revisionCommands = vi.fn();
+const layoutCommands = vi.fn();
+let defaultDiffLayout = "unified";
 beforeEach(() => {
   revisionCommands.mockReset();
+  layoutCommands.mockReset().mockResolvedValue(null);
+  defaultDiffLayout = "unified";
   vi.mocked(invoke).mockImplementation(async (command, parameters) => {
+    if (command === "read_review_layout" || command === "set_review_layout") return layoutCommands(command, parameters);
+    if (command === "save_default_diff_layout") {
+      if (parameters && "layout" in parameters) defaultDiffLayout = String(parameters.layout);
+      return null;
+    }
     if (command === "read_file_details") {
       return {
         before: null,
@@ -33,6 +42,7 @@ beforeEach(() => {
         custom : false,
         rules  : [],
       },
+      defaultDiffLayout,
       project   : null,
       categories: paths.map(path => ({
         category   : path === "after.txt" ? "Tests" : "Other",
@@ -316,6 +326,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   expect(commands).toHaveBeenLastCalledWith("save_commit_review", {
     checkout: main.path,
     comparison,
+    layout  : null,
   });
 
   element(target, "#review-file").click();
@@ -531,4 +542,143 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     expect(target.textContent).toContain("No uncommitted changes.");
   });
   expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: linked.path });
+});
+
+it("switches a marked worktree patch to split and restores the chosen layout on refresh", async () => {
+  const file = {
+    status      : "M",
+    path        : "shared.txt",
+    previousPath: null,
+    patch       : [
+      "diff --git a/shared.txt b/shared.txt",
+      "--- a/shared.txt",
+      "+++ b/shared.txt",
+      "@@ -3,4 +3,5 @@",
+      " same",
+      "-old",
+      "+new",
+      "+extra",
+      "",
+      " end",
+      "@@ -15 +16,0 @@",
+      "-last",
+      String.raw`\ No newline at end of file`,
+      "",
+    ].join("\n"),
+    side       : "unstaged",
+    fingerprint: "shared",
+    reviewed   : true,
+  };
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([file])
+    .mockResolvedValueOnce([file]);
+  layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+    .mockResolvedValueOnce("split");
+
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => expect(target.querySelector("#worktree-review")).toBeTruthy());
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[aria-label='Unified patch']")?.textContent).toBe(file.patch);
+  });
+  const split = "[aria-label='Split patch']";
+  element(target, "[aria-label='Diff layout'] button:last-child").click();
+  await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
+  const rows = [...target.querySelectorAll(`${ split } tbody tr:has(td)`)]
+    .map(row => [...row.querySelectorAll("td")].map(cell => cell.textContent.trim()));
+  expect(rows).toEqual([
+    ["3", "same", "3", "same"],
+    ["4", "old", "4", "new"],
+    ["", "", "5", "extra"],
+    ["5", "", "6", ""],
+    ["6", "end", "7", "end"],
+    ["15", "last\n\\ No newline at end of file", "", ""],
+  ]);
+  expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+  expect(element(target, "[aria-label='Changed files'] [aria-pressed=true]").textContent).toContain(file.path);
+  expect(layoutCommands).toHaveBeenLastCalledWith("set_review_layout", {
+    checkout: main.path,
+    id      : null,
+    layout  : "split",
+  });
+
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => {
+    expect(layoutCommands).toHaveBeenLastCalledWith("read_review_layout", {
+      checkout: main.path,
+      id      : null,
+    });
+    expect(target.querySelector<HTMLButtonElement>("#worktree-review")?.disabled).toBe(false);
+  });
+  expect(target.querySelector(split)).toBeTruthy();
+});
+
+it("applies global layout changes to an inherited review and reopens an explicit saved choice", async () => {
+  const comparison = {
+    baseLabel  : "main",
+    targetLabel: "HEAD",
+    mode       : "between",
+    base       : "abc123",
+    start      : "abc123",
+    end        : "def456",
+    files      : [
+      {
+        status      : "A",
+        path        : "added.txt",
+        previousPath: null,
+        patch       : "@@ -0,0 +1 @@\n+new\n",
+      },
+    ],
+  };
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(comparison)
+    .mockResolvedValueOnce(7)
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce({
+      comparison,
+      reviewedFiles: [],
+    });
+  layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce("unified");
+
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => expect(target.querySelector("#base")).toBeTruthy());
+  input(target, "#base", "main");
+  element(target, "#compare button").click();
+  const unified = "[aria-label='Unified patch']";
+  const split = "[aria-label='Split patch']";
+  await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
+
+  element(target, "#save-review").click();
+  const saved = "[aria-label='Saved commit reviews'] button";
+  await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
+  element(target, "details > summary").click();
+  const select = target.querySelector<HTMLSelectElement>("#default-diff-layout");
+  if (!select) throw new Error("Missing default diff layout");
+  expect(select.value).toBe("unified");
+  select.value = "split";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await vi.waitFor(() => expect(target.querySelector(split)?.textContent).toContain("new"));
+
+  const unifiedButton = "[aria-label='Diff layout'] button:first-child";
+  element(target, unifiedButton).click();
+  await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
+  expect(layoutCommands).toHaveBeenLastCalledWith("set_review_layout", {
+    checkout: main.path,
+    id      : 7,
+    layout  : "unified",
+  });
+
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => expect(target.querySelector(unified)).toBeNull());
+  element(target, saved).click();
+  await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
+  expect(select.value).toBe("split");
 });

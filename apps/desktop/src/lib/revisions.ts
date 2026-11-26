@@ -72,12 +72,15 @@ interface CommitReview {
   reviewedFiles: number[];
 }
 
+type DiffLayout = "unified" | "split";
+
 type ComparisonMode = "between" | "divergence";
 
 export type {
   CommitReview,
   Comparison,
   ComparisonMode,
+  DiffLayout,
   Project,
   Registration,
   Revisions,

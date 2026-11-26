@@ -1,9 +1,11 @@
 pub mod category_settings;
+mod diff_layout;
 mod file_details;
 mod git;
 mod reviews;
 mod worktree_review;
 
+pub use diff_layout::DiffLayout;
 pub use file_details::{FileDetails, FileDetailsSource};
 pub use reviews::{CommitReview, CommitReviewSummary};
 pub use worktree_review::{PatchSide, PatchVersion, StageWorktreePatchResult, WorktreePatch};
@@ -215,6 +217,7 @@ impl Application {
                 )",
             )?;
             connection.execute_batch(reviews::SCHEMA)?;
+            connection.execute_batch(diff_layout::SCHEMA)?;
             connection.execute_batch(worktree_review::SCHEMA)?;
             Ok::<_, rusqlite::Error>(connection)
         };

@@ -2,8 +2,8 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, Comparison, ComparisonMode, FileDetails, FileDetailsSource, Project,
-    Registration, Revisions, StageWorktreePatchResult, WorktreePatch,
+    Application, CommitReview, Comparison, ComparisonMode, DiffLayout, FileDetails,
+    FileDetailsSource, Project, Registration, Revisions, StageWorktreePatchResult, WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -45,8 +45,9 @@ async fn save_commit_review(
     app: State<'_, Application>,
     checkout: PathBuf,
     comparison: Comparison,
+    layout: Option<DiffLayout>,
 ) -> Result<i64, String> {
-    app.save_commit_review(&checkout, &comparison)
+    app.save_commit_review_with_layout(&checkout, &comparison, layout)
 }
 
 #[tauri::command]
@@ -97,6 +98,25 @@ async fn stage_worktree_patch(
 }
 
 #[tauri::command]
+async fn read_review_layout(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    id: Option<i64>,
+) -> Result<Option<DiffLayout>, String> {
+    app.read_review_layout(&checkout, id)
+}
+
+#[tauri::command]
+async fn set_review_layout(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    id: Option<i64>,
+    layout: DiffLayout,
+) -> Result<(), String> {
+    app.set_review_layout(&checkout, id, layout)
+}
+
+#[tauri::command]
 async fn read_file_details(
     app: State<'_, Application>,
     checkout: PathBuf,
@@ -125,9 +145,12 @@ pub fn run() {
             open_worktree_review,
             set_worktree_patch_reviewed,
             stage_worktree_patch,
+            read_review_layout,
+            set_review_layout,
             read_file_details,
             category_settings::read_category_settings,
             category_settings::save_category_settings,
+            category_settings::save_default_diff_layout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

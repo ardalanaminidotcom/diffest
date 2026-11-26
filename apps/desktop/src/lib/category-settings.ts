@@ -1,5 +1,7 @@
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 
+import type { DiffLayout } from "./revisions.js";
+
 interface FileCategory {
   category: string;
   subcategory: string | null;
@@ -18,6 +20,7 @@ interface RuleSettings {
 }
 
 interface Categorization {
+  defaultDiffLayout: DiffLayout;
   global: RuleSettings;
   project: RuleSettings | null;
   categories: FileCategory[];

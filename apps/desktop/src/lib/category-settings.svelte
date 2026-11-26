@@ -1,6 +1,7 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { Categorization, CategoryRule, FileCategory } from "./category-settings.js";
+import type { DiffLayout } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import CategoryRuleForm from "./category-rule-form.svelte";
 
@@ -8,13 +9,15 @@ interface Properties {
   mainCheckout: string | undefined;
   paths: string[];
   categories?: FileCategory[];
+  defaultLayout?: DiffLayout;
 }
 
-let { mainCheckout, paths, categories = $bindable([]) }: Properties = $props();
+let { mainCheckout, paths, categories = $bindable([]), defaultLayout = $bindable("unified") }: Properties = $props();
 let settings = $state<Categorization>();
 let loadedCheckout = $state<string>();
 let error = $state("");
 let pendingRead = 0;
+let savingLayout = $state(false);
 
 async function load(checkout: string | undefined, filePaths: string[]): Promise<void> {
   const request = ++pendingRead;
@@ -28,6 +31,7 @@ async function load(checkout: string | undefined, filePaths: string[]): Promise<
     settings = response;
     loadedCheckout = checkout;
     categories = response.categories;
+    defaultLayout = response.defaultDiffLayout ?? "unified";
     error = "";
   } catch (error_) {
     if (request === pendingRead) error = String(error_);
@@ -51,12 +55,43 @@ async function save(checkout: string | null, version: string, rules: CategoryRul
   });
   await load(mainCheckout, paths);
 }
+
+async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }): Promise<void> {
+  const select = event.currentTarget;
+  const version = settings?.global.version;
+  if (!version) return;
+
+  savingLayout = true;
+  try {
+    await invoke("save_default_diff_layout", {
+      version,
+      layout: select.value,
+    });
+    await load(mainCheckout, paths);
+  } catch (error_) {
+    error = String(error_);
+  } finally {
+    select.value = defaultLayout;
+    savingLayout = false;
+  }
+}
 </script>
 
 <svelte:window onfocus={refresh} />
 
 <details class="category-settings">
-  <summary>Category settings</summary>
+  <summary>Settings</summary>
+  {#if settings}
+    <label for="default-diff-layout">Default diff layout</label>
+    <select
+      id="default-diff-layout"
+      value={defaultLayout}
+      onchange={changeLayout}
+      disabled={savingLayout || !settings.global.version}>
+      <option value="unified">Unified</option>
+      <option value="split">Split</option>
+    </select>
+  {/if}
   <p>Rules use repository-relative globs. The first match wins. Use <code>**</code> to match across folders.</p>
   <p>In JSON, set <code>categoryRules</code> to an array of rules with <code>glob</code>, <code>category</code>, and an optional <code>subcategory</code>.</p>
   {#if settings}
@@ -92,5 +127,14 @@ async function save(checkout: string | null, version: string, rules: CategoryRul
 <style>
 .category-settings { margin-block-end: 1rem; }
 summary { cursor: pointer; }
+label, select { margin-block-start: 0.65rem; }
+select {
+  font: inherit;
+  color: inherit;
+  background: Canvas;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.45rem;
+}
 p { font-size: 0.85rem; overflow-wrap: anywhere; }
 </style>
