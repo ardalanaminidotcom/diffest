@@ -285,3 +285,30 @@ fn settings_keep_previous_rules_when_a_glob_exceeds_the_limit() {
     assert_eq!(snapshot.categories[0].category, "Custom");
     assert!(snapshot.global.error.unwrap().contains("exceeds 512 bytes"));
 }
+
+#[test]
+fn saving_settings_that_exceed_the_read_limit_preserves_the_original_file() {
+    use diffest_core::DiffLayout;
+
+    let temp = tempfile::tempdir().unwrap();
+    let settings = CategorySettings::new(temp.path());
+    let global = settings.read(None, &[]).global;
+    fs::create_dir_all(global.path.parent().unwrap()).unwrap();
+    let compact = serde_json::json!({"extra": "x".repeat(256 * 1024 - 24)}).to_string();
+    fs::write(&global.path, &compact).unwrap();
+    let before = settings.read(None, &[]);
+    assert!(before.global.error.is_none());
+
+    let error = settings
+        .save_default_diff_layout(
+            before.global.version.as_deref().unwrap(),
+            DiffLayout::Split,
+        )
+        .unwrap_err();
+    assert!(error.contains("Settings exceed 256 KiB"), "{error}");
+    assert_eq!(fs::read_to_string(&global.path).unwrap(), compact);
+    assert_eq!(
+        settings.read(None, &[]).default_diff_layout,
+        DiffLayout::Unified
+    );
+}

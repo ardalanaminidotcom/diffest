@@ -13,6 +13,7 @@ use std::{
 use tempfile::NamedTempFile;
 
 const SETTINGS_LIMIT: u64 = 256 * 1024;
+const SETTINGS_SIZE_ERROR: &str = "Settings exceed 256 KiB";
 const SETTINGS_PATH: &str = ".diffest/settings.json";
 const RULES_KEY: &str = "categoryRules";
 const LAYOUT_KEY: &str = "defaultDiffLayout";
@@ -175,6 +176,14 @@ fn edit_settings(
     let mut file = NamedTempFile::new_in(directory).map_err(|error| describe(&error))?;
     serde_json::to_writer_pretty(&mut file, &json).map_err(|error| describe(&error))?;
     file.write_all(b"\n").map_err(|error| describe(&error))?;
+    let size = file
+        .as_file()
+        .metadata()
+        .map_err(|error| describe(&error))?
+        .len();
+    if size > SETTINGS_LIMIT {
+        return Err(describe(&SETTINGS_SIZE_ERROR));
+    }
     if read_file(path).map_err(|error| describe(&error))? != contents {
         return Err(describe(&"Settings changed on disk. Reload before saving."));
     }
@@ -249,7 +258,7 @@ fn read_file(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
             if contents.len() as u64 > SETTINGS_LIMIT {
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidData,
-                    "Settings exceed 256 KiB",
+                    SETTINGS_SIZE_ERROR,
                 ));
             }
             Ok(Some(contents))
