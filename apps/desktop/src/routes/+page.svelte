@@ -7,6 +7,7 @@ import type {
   Project,
   Registration,
   Revisions,
+  StageWorktreePatchResult,
   WorktreePatch,
 } from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
@@ -179,9 +180,9 @@ function markFile(id: number, displayed: Comparison, fileIndex: number): void {
   });
 }
 
-function showWorktreeReview(patches: WorktreePatch[]): void {
-  const selected = selectedWorktreePatch;
-  const index = patches.findIndex(patch => patch.side === selected?.side && patch.path === selected.path);
+function showWorktreeReview(patches: WorktreePatch[], side = selectedWorktreePatch?.side): void {
+  const path = selectedWorktreePatch?.path;
+  const index = patches.findIndex(patch => patch.side === side && patch.path === path);
   selectedIndex = Math.max(0, index);
   worktreeReview = patches;
   comparison = null;
@@ -203,6 +204,19 @@ function markWorktreePatch(patch: WorktreePatch): void {
       reviewed   : !patch.reviewed,
     });
     showWorktreeReview(patches);
+  });
+}
+
+function stageWorktreePatch(patch: WorktreePatch): void {
+  void run(async () => {
+    const result = await invoke<StageWorktreePatchResult>("stage_worktree_patch", {
+      checkout   : activeCheckout,
+      fingerprint: patch.fingerprint,
+    });
+    const selected = selectedWorktreePatch;
+    const side = !result.error && selected?.fingerprint === patch.fingerprint ? "staged" : selected?.side;
+    showWorktreeReview(result.patches, side);
+    error = result.error ?? "";
   });
 }
 </script>
@@ -344,6 +358,15 @@ function markWorktreePatch(patch: WorktreePatch): void {
                 <button id="review-file" type="button" onclick={() => markWorktreePatch(patch)} disabled={busy}>
                   {patch.reviewed ? "Clear review mark" : "Mark as reviewed"}
                 </button>
+                {#if patch.side === "unstaged"}
+                  <button
+                    id="stage-file"
+                    type="button"
+                    onclick={() => stageWorktreePatch(patch)}
+                    disabled={busy || !patch.reviewed || patch.status === "U"}>
+                    Stage file
+                  </button>
+                {/if}
               {:else if review && comparison}
                 {@const current = review}
                 {@const displayed = comparison}

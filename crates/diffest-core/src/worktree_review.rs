@@ -37,9 +37,23 @@ pub struct WorktreePatch {
     pub reviewed: bool,
 }
 
+#[derive(Serialize)]
+pub struct StageWorktreePatchResult {
+    pub patches: Vec<WorktreePatch>,
+    pub error: Option<String>,
+}
+
+enum ReviewAction<'a> {
+    Refresh,
+    Mark(&'a str, bool),
+    Stage(&'a str),
+}
+
 impl Application {
     pub fn open_worktree_review(&self, checkout: &Path) -> Result<Vec<WorktreePatch>, String> {
-        self.refresh_worktree_review(checkout, None)
+        Ok(self
+            .refresh_worktree_review(checkout, ReviewAction::Refresh)?
+            .patches)
     }
 
     pub fn set_worktree_patch_reviewed(
@@ -48,40 +62,77 @@ impl Application {
         fingerprint: &str,
         reviewed: bool,
     ) -> Result<Vec<WorktreePatch>, String> {
-        self.refresh_worktree_review(checkout, Some((fingerprint, reviewed)))
+        Ok(self
+            .refresh_worktree_review(checkout, ReviewAction::Mark(fingerprint, reviewed))?
+            .patches)
+    }
+
+    pub fn stage_worktree_patch(
+        &self,
+        checkout: &Path,
+        fingerprint: &str,
+    ) -> Result<StageWorktreePatchResult, String> {
+        self.refresh_worktree_review(checkout, ReviewAction::Stage(fingerprint))
     }
 
     fn refresh_worktree_review(
         &self,
         checkout: &Path,
-        mark: Option<(&str, bool)>,
-    ) -> Result<Vec<WorktreePatch>, String> {
+        action: ReviewAction<'_>,
+    ) -> Result<StageWorktreePatchResult, String> {
         let checkout = git::checkout_root(checkout)?;
         let directory = git::worktree_directory(&checkout)?;
         let worktree = path_text(&directory)?;
         let mut connection = self.connect()?;
         let error = |error| format!("Cannot update worktree review: {error}");
-        // Serialize refreshes and marks so an older refresh cannot remove a newer mark.
+        // Serialize refreshes, marks and staging so an older refresh cannot remove a newer mark.
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(error)?;
+        let mut marks = {
+            let mut query = transaction
+                .prepare("SELECT fingerprint FROM worktree_review_marks WHERE worktree = ?1")
+                .map_err(error)?;
+            query
+                .query_map([worktree], |row| row.get(0))
+                .map_err(error)?
+                .collect::<rusqlite::Result<HashSet<String>>>()
+                .map_err(error)?
+        };
+        let (staged_from, stage_error) = if let ReviewAction::Stage(fingerprint) = action {
+            if marks.contains(fingerprint) {
+                match git::stage_reviewed_patch(&checkout, &directory, fingerprint) {
+                    Ok(patch) => (Some(patch), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else {
+                (
+                    None,
+                    Some("Only a current reviewed unstaged change can be staged.".into()),
+                )
+            }
+        } else {
+            (None, None)
+        };
         let mut patches = git::uncommitted_patches(&checkout)?;
-        let mut update = || {
-            let mut marks = {
-                let mut query = transaction
-                    .prepare("SELECT fingerprint FROM worktree_review_marks WHERE worktree = ?1")?;
-                query
-                    .query_map([worktree], |row| row.get(0))?
-                    .collect::<rusqlite::Result<HashSet<String>>>()?
-            };
+        let update = || {
             let mut delete = transaction.prepare(
                 "DELETE FROM worktree_review_marks WHERE worktree = ?1 AND fingerprint = ?2",
             )?;
             for patch in &mut patches {
-                patch.reviewed = marks.remove(&patch.fingerprint);
-                if let Some((fingerprint, reviewed)) = mark
-                    && fingerprint == patch.fingerprint
-                {
+                let fingerprint = &patch.fingerprint;
+                patch.reviewed = marks.remove(fingerprint);
+                let mark = match action {
+                    ReviewAction::Mark(marked, reviewed) if marked == fingerprint => Some(reviewed),
+                    _ if staged_from
+                        .as_ref()
+                        .is_some_and(|reviewed| patch.matches_staged(reviewed)) =>
+                    {
+                        Some(true)
+                    }
+                    _ => None,
+                };
+                if let Some(reviewed) = mark {
                     patch.reviewed = reviewed;
                     if reviewed {
                         transaction.execute(
@@ -100,6 +151,21 @@ impl Application {
         };
         update().map_err(error)?;
         transaction.commit().map_err(error)?;
-        Ok(patches)
+        Ok(StageWorktreePatchResult {
+            patches,
+            error: stage_error,
+        })
+    }
+}
+
+impl WorktreePatch {
+    fn matches_staged(&self, reviewed: &Self) -> bool {
+        self.side == PatchSide::Staged
+            && self.file.path == reviewed.file.path
+            && self.file.previous_path == reviewed.file.previous_path
+            && self.file.status == reviewed.file.status
+            && self.before == reviewed.before
+            && self.after == reviewed.after
+            && self.file.patch == reviewed.file.patch
     }
 }

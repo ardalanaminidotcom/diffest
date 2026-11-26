@@ -421,6 +421,22 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     side       : "unstaged",
     fingerprint: "unstaged",
   };
+  const conflict = {
+    ...unstaged,
+    status     : "U",
+    fingerprint: "changed",
+    patch      : "+updated\n",
+  };
+  const reviewedConflict = {
+    ...conflict,
+    reviewed: true,
+  };
+  const refreshedConflict = {
+    ...reviewedConflict,
+    fingerprint: "refreshed",
+    patch      : "+refreshed\n",
+    reviewed   : false,
+  };
   const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([project])
@@ -433,15 +449,12 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
         reviewed: true,
       },
     ])
-    .mockResolvedValueOnce([
-      staged,
-      {
-        ...unstaged,
-        status     : "U",
-        fingerprint: "changed",
-        patch      : "+updated\n",
-      },
-    ])
+    .mockResolvedValueOnce({
+      patches: [staged, conflict],
+      error  : "Review the current patch before staging.",
+    })
+    .mockResolvedValueOnce([staged, reviewedConflict])
+    .mockResolvedValueOnce([staged, refreshedConflict])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce([]);
 
@@ -465,6 +478,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   unstagedEntry.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe(unstaged.patch);
+  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
   element(target, "#review-file").click();
   await vi.waitFor(() => {
     expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
@@ -475,13 +489,29 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     reviewed   : true,
   });
 
-  element(target, "#worktree-review").click();
+  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(false);
+  element(target, "#stage-file").click();
   await vi.waitFor(() => {
     expect(element(target, "#review-progress").textContent).toBe("0 of 2 reviewed");
   });
+  expect(commands).toHaveBeenLastCalledWith("stage_worktree_patch", {
+    checkout   : main.path,
+    fingerprint: "unstaged",
+  });
+  expect(element(target, "[role='alert']").textContent).toBe("Review the current patch before staging.");
   expect(element(target, `${ files }:nth-of-type(2)`).textContent).toContain("Conflicted");
   expect(target.querySelector("pre")?.textContent).toBe("+updated\n");
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+  });
+  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
 
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => {
+    expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: main.path });
+    expect(target.querySelector("pre")?.textContent).toBe(refreshedConflict.patch);
+  });
   element(target, "aside ul li:nth-child(2) button").click();
   await vi.waitFor(() => {
     expect(target.textContent).toContain("No uncommitted changes.");

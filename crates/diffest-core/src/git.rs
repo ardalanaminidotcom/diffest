@@ -2,6 +2,8 @@ use crate::{ChangedFile, Commit, PatchSide, PatchVersion, Revisions, Worktree, W
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    fs::{self, OpenOptions},
+    io,
     iter::once,
     path::{Path, PathBuf},
     process::Command,
@@ -17,6 +19,14 @@ const PATCH_OPTIONS: &[&str] = &[
 ];
 
 fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    git_with_index(directory, args, None)
+}
+
+fn git_with_index(
+    directory: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
         .current_dir(directory)
@@ -26,6 +36,9 @@ fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args);
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -310,6 +323,95 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         patches.push(patch);
     }
     Ok(patches)
+}
+
+pub(crate) fn stage_reviewed_patch(
+    checkout: &Path,
+    directory: &Path,
+    fingerprint: &str,
+) -> Result<WorktreePatch, String> {
+    let index = directory.join("index");
+    let lock_path = directory.join("index.lock");
+    let open_error = |error| format!("Cannot lock the Git index: {error}");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(open_error)?;
+    let lock = tempfile::TempPath::try_from_path(lock_path).map_err(open_error)?;
+    let index_error = |error| format!("Cannot prepare the Git index: {error}");
+
+    let changed = "The unstaged patch changed. Review it again before staging.";
+    let patch = uncommitted_patches(checkout)?
+        .into_iter()
+        .find(|patch| patch.side == PatchSide::Unstaged && patch.fingerprint == fingerprint)
+        .ok_or(changed)?;
+    if patch.file.status == 'U' {
+        return Err("Resolve this conflict in Git before staging.".into());
+    }
+    if patch
+        .after
+        .as_ref()
+        .is_some_and(|version| version.mode == "160000")
+        && patch
+            .file
+            .patch
+            .lines()
+            .any(|line| line.starts_with("+Subproject commit ") && line.ends_with("-dirty"))
+    {
+        return Err("The submodule has worktree changes that cannot be staged here.".into());
+    }
+
+    // Git can read the worktree again during add. Stage in a copy and publish it
+    // only if the resulting entries match the reviewed versions and paths.
+    let scratch = tempfile::tempdir_in(directory).map_err(index_error)?;
+    let candidate = scratch.path().join("index");
+    match fs::symlink_metadata(&index) {
+        Ok(metadata) if metadata.is_file() => {
+            fs::copy(&index, &candidate).map_err(index_error)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => return Err("The Git index is not a regular file.".into()),
+        Err(error) => return Err(index_error(error)),
+    }
+
+    let list = ["ls-files", "--stage", "-z"];
+    let original = git(checkout, &list)?;
+    let path = patch.file.path.as_str();
+    let previous = patch.file.previous_path.as_deref();
+    let mut args = vec!["--literal-pathspecs", "add", "--all", "--", path];
+    args.extend(previous);
+    git_with_index(checkout, &args, Some(&candidate))?;
+
+    let mut expected: Vec<_> = index_records(&original)
+        .filter(|record| {
+            let recorded_path = record.splitn(2, |byte| *byte == b'\t').nth(1);
+            recorded_path != Some(path.as_bytes()) && recorded_path != previous.map(str::as_bytes)
+        })
+        .collect();
+    let after = patch
+        .after
+        .as_ref()
+        .map(|version| format!("{} {} 0\t{path}", version.mode, version.object_id));
+    expected.extend(after.as_deref().map(str::as_bytes));
+    expected.sort_unstable();
+
+    let staged = git_with_index(checkout, &list, Some(&candidate))?;
+    let mut actual: Vec<_> = index_records(&staged).collect();
+    actual.sort_unstable();
+    if actual != expected {
+        return Err(changed.into());
+    }
+
+    fs::rename(candidate, &lock).map_err(index_error)?;
+    lock.persist(index)
+        .map_err(|error| format!("Cannot write the Git index: {error}"))?;
+    Ok(patch)
+}
+
+fn index_records(list: &[u8]) -> impl Iterator<Item = &[u8]> {
+    list.split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
 }
 
 fn worktree_path(path: &[u8]) -> Result<&str, String> {

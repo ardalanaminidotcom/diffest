@@ -4,7 +4,7 @@ mod reviews;
 mod worktree_review;
 
 pub use reviews::{CommitReview, CommitReviewSummary};
-pub use worktree_review::{PatchSide, PatchVersion, WorktreePatch};
+pub use worktree_review::{PatchSide, PatchVersion, StageWorktreePatchResult, WorktreePatch};
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
