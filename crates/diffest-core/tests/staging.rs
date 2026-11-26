@@ -183,65 +183,29 @@ fn a_reviewed_conflict_cannot_be_staged_and_its_index_stages_are_preserved() {
 }
 
 #[test]
-fn a_worktree_edit_during_staging_cannot_enter_the_index() {
+fn repository_local_clean_filters_are_rejected_before_review_or_staging() {
     let temp = tempfile::tempdir().unwrap();
     let checkout = temp.path().join("project");
     init(&checkout);
-    let file = checkout.join("reviewed.txt");
-    fs::write(&file, "committed\n").unwrap();
-    fs::write(checkout.join("unrelated.txt"), "committed\n").unwrap();
-    fs::write(
-        checkout.join(".gitattributes"),
-        "reviewed.txt filter=race\n",
-    )
-    .unwrap();
-    // Run the edit while Git reads the reviewed file for staging.
-    fs::write(
-        checkout.join(".git/race-filter"),
-        r#"if [ -e .git/arm-race ] && [ -n "$GIT_INDEX_FILE" ]; then
-    rm .git/arm-race
-    printf 'concurrent edit\n' > reviewed.txt
-    (unset GIT_INDEX_FILE; git add unrelated.txt) > .git/concurrent-add-log 2>&1
-    cat >/dev/null
-    cat reviewed.txt
-else
-    cat
-fi
-"#,
-    )
-    .unwrap();
-    git(
-        &checkout,
-        &["config", "filter.race.clean", "sh .git/race-filter"],
-    );
-    git(&checkout, &["config", "filter.race.required", "true"]);
+    fs::write(checkout.join(".gitattributes"), "reviewed.txt filter=local
+").unwrap();
+    fs::write(checkout.join("reviewed.txt"), "committed
+").unwrap();
     git(&checkout, &["add", "."]);
     git(&checkout, &["commit", "-m", "Initial"]);
-    fs::write(checkout.join("unrelated.txt"), "already staged\n").unwrap();
-    git(&checkout, &["add", "unrelated.txt"]);
-    fs::write(checkout.join("unrelated.txt"), "another edit\n").unwrap();
-    fs::write(&file, "reviewed\n").unwrap();
+    fs::write(checkout.join("reviewed.txt"), "reviewed
+").unwrap();
 
     let app = Application::new(temp.path().join("review.sqlite3"));
     let reviewed = mark_unstaged(&app, &checkout, "reviewed.txt");
     let index = git(&checkout, &["ls-files", "--stage"]);
-    fs::write(checkout.join(".git/arm-race"), "").unwrap();
+    git(&checkout, &["config", "filter.local.clean", "cat"]);
 
-    let result = app.stage_worktree_patch(&checkout, &reviewed).unwrap();
-    assert!(result.error.is_some());
-    assert_eq!(fs::read_to_string(&file).unwrap(), "concurrent edit\n");
-    assert!(
-        fs::read_to_string(checkout.join(".git/concurrent-add-log"))
-            .unwrap()
-            .contains("index.lock")
-    );
+    let review_error = app.open_worktree_review(&checkout).err().unwrap();
+    assert!(review_error.contains("repository-local Git filter"));
+    let stage_error = app.stage_worktree_patch(&checkout, &reviewed).err().unwrap();
+    assert!(stage_error.contains("repository-local Git filter"));
     assert_eq!(git(&checkout, &["ls-files", "--stage"]), index);
-    assert!(result.patches.iter().any(|patch| {
-        patch.file.path == "reviewed.txt"
-            && patch.side == PatchSide::Unstaged
-            && patch.file.patch.contains("+concurrent edit\n")
-            && !patch.reviewed
-    }));
 }
 
 #[cfg(unix)]

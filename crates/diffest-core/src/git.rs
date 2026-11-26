@@ -299,7 +299,19 @@ pub(crate) fn compare_commits(
 }
 
 pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>, String> {
-    let unmerged = git(checkout, &["ls-files", "--unmerged", "-z"])?;
+    uncommitted_patches_for(checkout, &[])
+}
+
+pub(crate) fn uncommitted_patches_for(
+    checkout: &Path,
+    paths: &[&OsStr],
+) -> Result<Vec<WorktreePatch>, String> {
+    check_repository_filters(checkout)?;
+    let unmerged = git_with_paths(
+        checkout,
+        &["--literal-pathspecs", "ls-files", "--unmerged", "-z", "--"],
+        paths,
+    )?;
     let mut conflicts = BTreeMap::<&[u8], Vec<&[u8]>>::new();
     for record in unmerged
         .split(|byte| *byte == 0)
@@ -326,6 +338,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         (PatchSide::Unstaged, "--ours"),
     ] {
         let mut args = vec![
+            "--literal-pathspecs",
             "diff",
             option,
             "--diff-filter=u",
@@ -335,7 +348,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         args.extend(["--patch-with-raw", "-z", "--full-index", "--abbrev=64"]);
         args.extend(PATCH_OPTIONS);
         args.push("--");
-        let output = git(checkout, &args)?;
+        let output = git_with_paths(checkout, &args, paths)?;
         charge(&output)?;
         for raw in parse_patch(&output)? {
             if !conflicts.contains_key(raw.path) {
@@ -344,9 +357,17 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         }
     }
 
-    let untracked = git(
+    let untracked = git_with_paths(
         checkout,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ],
+        paths,
     )?;
     let trust_filemode = untracked.is_empty()
         || git(
@@ -425,6 +446,27 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
     Ok(patches)
 }
 
+// Git may invoke clean/process filters when comparing working files as well as staging.
+fn check_repository_filters(checkout: &Path) -> Result<(), String> {
+    let config = git(
+        checkout,
+        &["config", "--includes", "--show-scope", "--null", "--list"],
+    )?;
+    let mut entries = config.split(|&byte| byte == 0);
+    while let (Some(scope), Some(entry)) = (entries.next(), entries.next()) {
+        let key = entry.split(|&byte| byte == b'\n').next().unwrap_or_default();
+        if matches!(scope, b"local" | b"worktree")
+            && key.starts_with(b"filter.")
+            && (key.ends_with(b".clean") || key.ends_with(b".process"))
+        {
+            return Err(
+                "Diffest cannot review or stage changes with repository-local Git filters.".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn conflict_version(stages: &[&[u8]]) -> Result<(&'static str, PatchVersion), String> {
     for (number, option) in [("2", "--ours"), ("3", "--theirs"), ("1", "--base")] {
         for header in stages {
@@ -500,6 +542,7 @@ pub(crate) fn stage_reviewed_patch(
         .chain(previous)
         .map(os_path)
         .collect::<Result<Vec<_>, _>>()?;
+    check_repository_filters(checkout)?;
     git_with_index(
         checkout,
         &["--literal-pathspecs", "add", "--all", "--"],

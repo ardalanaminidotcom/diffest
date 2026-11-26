@@ -535,8 +535,12 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   expect(invoke).toHaveBeenCalledWith("read_file_details", {
     checkout: main.path,
     source  : {
-      kind       : "worktree",
-      fingerprint: "unstaged",
+      kind             : "worktree",
+      fingerprint      : "unstaged",
+      path             : "shared.txt",
+      previousPath     : null,
+      pathBytes        : null,
+      previousPathBytes: null,
     },
   });
   expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);

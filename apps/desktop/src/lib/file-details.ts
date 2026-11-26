@@ -14,6 +14,10 @@ type FileDetailsSource
   | {
     kind: "worktree";
     fingerprint: string;
+    path: string;
+    previousPath: string | null;
+    pathBytes?: number[] | null | undefined;
+    previousPathBytes?: number[] | null | undefined;
   };
 
 interface FileVersion {

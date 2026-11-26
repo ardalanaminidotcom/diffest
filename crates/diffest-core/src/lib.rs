@@ -10,7 +10,7 @@ pub use file_details::{FileDetails, FileDetailsSource};
 pub use reviews::{CommitReview, CommitReviewProgress, CommitReviewSummary};
 pub use worktree_review::{PatchSide, PatchVersion, StageWorktreePatchResult, WorktreePatch};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -209,6 +209,52 @@ impl Application {
                 Ok(project)
             })
             .collect()
+    }
+
+    pub fn require_registered_checkout(
+        &self,
+        checkout: &Path,
+        require_main: bool,
+    ) -> Result<PathBuf, String> {
+        let denied = "Select a registered Diffest checkout.";
+        let supplied = checkout.canonicalize().map_err(|_| denied)?;
+        let root = git::checkout_root(&supplied).map_err(|_| denied)?;
+        if supplied != root {
+            return Err(denied.into());
+        }
+        let common = git::common_directory(&root).map_err(|_| denied)?;
+        let main: String = self
+            .connect()?
+            .query_row(
+                "SELECT main_checkout FROM projects WHERE common_directory = ?1",
+                [path_text(&common)?],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("Cannot check project registration: {error}"))?
+            .ok_or(denied)?;
+        let (main, worktrees) = git::worktrees(&common, Path::new(&main))?;
+        let registered = if require_main {
+            main.as_deref() == Some(root.as_path())
+        } else {
+            worktrees.iter().any(|worktree| worktree.path == root)
+        };
+        if !registered {
+            return Err(denied.into());
+        }
+        if require_main {
+            for path in [root.join(".diffest"), root.join(".diffest/settings.json")] {
+                match path.symlink_metadata() {
+                    Ok(metadata) if metadata.is_symlink() => {
+                        return Err("Project settings cannot use symbolic links.".into());
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(format!("Cannot inspect project settings: {error}")),
+                }
+            }
+        }
+        Ok(root)
     }
 
     pub fn open_worktree(&self, checkout: &Path) -> Result<Revisions, String> {

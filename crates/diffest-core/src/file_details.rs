@@ -25,6 +25,10 @@ pub enum FileDetailsSource {
     },
     Worktree {
         fingerprint: String,
+        path: String,
+        previous_path: Option<String>,
+        path_bytes: Option<Vec<u8>>,
+        previous_path_bytes: Option<Vec<u8>>,
     },
 }
 
@@ -70,8 +74,22 @@ impl Application {
                     after: (status != 'D').then(|| tree_version(&checkout, &end, path)),
                 })
             }
-            FileDetailsSource::Worktree { fingerprint } => {
-                let patch = git::uncommitted_patches(&checkout)?
+            FileDetailsSource::Worktree {
+                fingerprint,
+                path,
+                previous_path,
+                path_bytes,
+                previous_path_bytes,
+            } => {
+                let path = path_bytes.as_deref().unwrap_or(path.as_bytes());
+                let previous = previous_path_bytes
+                    .as_deref()
+                    .or_else(|| previous_path.as_deref().map(str::as_bytes));
+                let paths = std::iter::once(path)
+                    .chain(previous)
+                    .map(git::os_path)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let patch = git::uncommitted_patches_for(&checkout, &paths)?
                     .into_iter()
                     .find(|patch| patch.fingerprint == fingerprint)
                     .ok_or(

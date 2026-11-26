@@ -28,6 +28,16 @@ fn init_project(directory: &Path) -> PathBuf {
     main.canonicalize().unwrap()
 }
 
+fn worktree_source(patch: &diffest_core::WorktreePatch) -> FileDetailsSource {
+    FileDetailsSource::Worktree {
+        fingerprint: patch.fingerprint.clone(),
+        path: patch.file.path.clone(),
+        previous_path: patch.file.previous_path.clone(),
+        path_bytes: patch.file.path_bytes.clone(),
+        previous_path_bytes: patch.file.previous_path_bytes.clone(),
+    }
+}
+
 #[test]
 fn file_details_use_the_index_between_the_committed_and_working_versions() {
     let temp = tempfile::tempdir().unwrap();
@@ -45,12 +55,7 @@ fn file_details_use_the_index_between_the_committed_and_working_versions() {
     let sizes = |side| {
         let patch = patches.iter().find(|patch| patch.side == side).unwrap();
         let details = app
-            .file_details(
-                &main,
-                FileDetailsSource::Worktree {
-                    fingerprint: patch.fingerprint.clone(),
-                },
-            )
+            .file_details(&main, worktree_source(patch))
             .unwrap();
         (
             details.before.unwrap().byte_size,
@@ -66,12 +71,7 @@ fn file_details_use_the_index_between_the_committed_and_working_versions() {
         .unwrap();
     fs::write(&path, "changed after opening\n").unwrap();
     assert!(
-        app.file_details(
-            &main,
-            FileDetailsSource::Worktree {
-                fingerprint: reviewed.fingerprint.clone()
-            }
-        )
+        app.file_details(&main, worktree_source(reviewed))
         .is_err()
     );
 }
@@ -98,12 +98,7 @@ fn added_and_deleted_images_show_their_present_side_and_corrupt_images_keep_meta
     assert_eq!(patches.len(), 3);
     for patch in patches {
         let details = app
-            .file_details(
-                &main,
-                FileDetailsSource::Worktree {
-                    fingerprint: patch.fingerprint,
-                },
-            )
+            .file_details(&main, worktree_source(&patch))
             .unwrap();
         match patch.file.path.as_str() {
             "deleted.gif" => {
@@ -304,12 +299,7 @@ fn conflicts_and_binary_changes_remain_reviewable_and_lose_marks_when_edited() {
     assert_eq!(conflict.file.status, 'U');
     assert!(conflict.file.patch.contains("<<<<<<< HEAD"));
     let details = app
-        .file_details(
-            &main,
-            FileDetailsSource::Worktree {
-                fingerprint: conflict.fingerprint.clone(),
-            },
-        )
+        .file_details(&main, worktree_source(conflict))
         .unwrap();
     assert_eq!(details.before.unwrap().byte_size, Some(5));
     for patch in &patches {
@@ -734,12 +724,7 @@ fn worktree_review_stages_the_selected_byte_path_and_reads_its_details() {
         .unwrap();
     assert_eq!(patch.file.path, r"note-\xff.txt");
     let details = app
-        .file_details(
-            &main,
-            FileDetailsSource::Worktree {
-                fingerprint: patch.fingerprint.clone(),
-            },
-        )
+        .file_details(&main, worktree_source(patch))
         .unwrap();
     assert_eq!(details.after.unwrap().byte_size, Some(13));
 
@@ -844,4 +829,54 @@ fn worktree_review_limits_the_combined_staged_and_untracked_diff() {
     let app = Application::new(temp.path().join("diffest.sqlite3"));
     let error = app.open_worktree_review(&main).err().unwrap();
     assert!(error.contains("diff is too large"), "{error}");
+}
+
+#[test]
+fn selecting_a_file_skips_unrelated_oversized_worktree_patches() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    fs::write(main.join("selected.txt"), "selected
+").unwrap();
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    fs::write(main.join("unrelated.txt"), "ordinary text line
+".repeat(60_000)).unwrap();
+
+    let details = app.file_details(&main, worktree_source(&patches[0])).unwrap();
+    assert_eq!(details.after.unwrap().byte_size, Some(9));
+}
+
+#[test]
+fn desktop_path_validation_requires_a_registered_worktree_or_project_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    git(&main, &["worktree", "add", "-b", "topic", "../linked"]);
+    let linked = temp.path().join("linked").canonicalize().unwrap();
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+
+    assert!(app.require_registered_checkout(&main, false).is_err());
+    app.register_project(&linked).unwrap();
+    assert_eq!(app.require_registered_checkout(&linked, false).unwrap(), linked);
+    assert_eq!(app.require_registered_checkout(&main, true).unwrap(), main);
+    assert!(app.require_registered_checkout(&linked, true).is_err());
+    assert!(app.require_registered_checkout(temp.path(), true).is_err());
+}
+
+#[test]
+fn selected_worktree_rename_keeps_both_file_versions() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    fs::write(main.join("original.txt"), "rename me
+").unwrap();
+    git(&main, &["add", "original.txt"]);
+    git(&main, &["commit", "-m", "Initial"]);
+    git(&main, &["mv", "original.txt", "renamed.txt"]);
+
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    let details = app.file_details(&main, worktree_source(&patches[0])).unwrap();
+    assert_eq!(details.before.unwrap().path, "original.txt");
+    assert_eq!(details.after.unwrap().path, "renamed.txt");
 }

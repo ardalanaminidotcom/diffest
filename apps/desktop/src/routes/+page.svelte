@@ -435,7 +435,14 @@ function stageWorktreePatch(patch: WorktreePatch): void {
                 </button>
               {/if}
               {#if selectedWorktreePatch}
-                <FileDetails checkout={activeCheckout} source={{ kind: "worktree", fingerprint: selectedWorktreePatch.fingerprint }} />
+                <FileDetails checkout={activeCheckout} source={{
+                  kind: "worktree",
+                  fingerprint: selectedWorktreePatch.fingerprint,
+                  path: selectedWorktreePatch.path,
+                  previousPath: selectedWorktreePatch.previousPath,
+                  pathBytes: selectedWorktreePatch.pathBytes ?? null,
+                  previousPathBytes: selectedWorktreePatch.previousPathBytes ?? null,
+                }} />
               {:else if comparison}
                 <FileDetails checkout={activeCheckout} source={{
                   kind: "comparison",

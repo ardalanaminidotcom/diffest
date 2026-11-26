@@ -7,7 +7,8 @@ use diffest_core::{
     StageWorktreePatchResult, WorktreePatch,
 };
 use std::path::PathBuf;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 #[tauri::command]
 async fn list_projects(app: State<'_, Application>) -> Result<Vec<Project>, String> {
@@ -16,9 +17,22 @@ async fn list_projects(app: State<'_, Application>) -> Result<Vec<Project>, Stri
 
 #[tauri::command]
 async fn register_project(
+    handle: AppHandle,
     app: State<'_, Application>,
     checkout: PathBuf,
 ) -> Result<Registration, String> {
+    let checkout = checkout
+        .canonicalize()
+        .map_err(|error| format!("Cannot open checkout: {error}"))?;
+    let confirmed = handle
+        .dialog()
+        .message(format!("Add this local Git checkout?\n\n{checkout:?}"))
+        .title("Add Diffest project")
+        .buttons(MessageDialogButtons::OkCancel)
+        .blocking_show();
+    if !confirmed {
+        return Err("Project registration canceled.".into());
+    }
     app.register_project(&checkout)
 }
 
@@ -27,6 +41,7 @@ async fn open_worktree(
     app: State<'_, Application>,
     checkout: PathBuf,
 ) -> Result<Revisions, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.open_worktree(&checkout)
 }
 
@@ -38,6 +53,7 @@ async fn compare_revisions(
     target: String,
     mode: ComparisonMode,
 ) -> Result<Comparison, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.compare_revisions(&checkout, &base, &target, mode)
 }
 
@@ -48,6 +64,7 @@ async fn save_commit_review(
     comparison: Comparison,
     layout: Option<DiffLayout>,
 ) -> Result<CommitReviewSummary, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.save_commit_review_with_summary(&checkout, &comparison, layout)
 }
 
@@ -57,6 +74,7 @@ async fn open_commit_review(
     checkout: PathBuf,
     id: i64,
 ) -> Result<CommitReview, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.open_commit_review(&checkout, id)
 }
 
@@ -68,6 +86,7 @@ async fn set_commit_file_reviewed(
     file_index: usize,
     reviewed: bool,
 ) -> Result<CommitReviewProgress, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.update_commit_file_review(&checkout, id, file_index, reviewed)
 }
 
@@ -76,6 +95,7 @@ async fn open_worktree_review(
     app: State<'_, Application>,
     checkout: PathBuf,
 ) -> Result<Vec<WorktreePatch>, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.open_worktree_review(&checkout)
 }
 
@@ -86,6 +106,7 @@ async fn set_worktree_patch_reviewed(
     fingerprint: String,
     reviewed: bool,
 ) -> Result<Vec<WorktreePatch>, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.set_worktree_patch_reviewed(&checkout, &fingerprint, reviewed)
 }
 
@@ -95,6 +116,7 @@ async fn stage_worktree_patch(
     checkout: PathBuf,
     fingerprint: String,
 ) -> Result<StageWorktreePatchResult, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.stage_worktree_patch(&checkout, &fingerprint)
 }
 
@@ -104,6 +126,7 @@ async fn read_review_layout(
     checkout: PathBuf,
     id: Option<i64>,
 ) -> Result<Option<DiffLayout>, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.read_review_layout(&checkout, id)
 }
 
@@ -114,6 +137,7 @@ async fn set_review_layout(
     id: Option<i64>,
     layout: DiffLayout,
 ) -> Result<(), String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.set_review_layout(&checkout, id, layout)
 }
 
@@ -123,12 +147,14 @@ async fn read_file_details(
     checkout: PathBuf,
     source: FileDetailsSource,
 ) -> Result<FileDetails, String> {
+    let checkout = app.require_registered_checkout(&checkout, false)?;
     app.file_details(&checkout, source)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let database = app.path().app_data_dir()?.join("diffest.sqlite3");
             app.manage(Application::new(database));

@@ -13,8 +13,10 @@ function render(): HTMLDivElement {
     props: {
       checkout: "/repo",
       source  : {
-        kind       : "worktree",
-        fingerprint: "selected patch",
+        kind        : "worktree",
+        fingerprint : "selected patch",
+        path        : "image.png",
+        previousPath: null,
       },
     },
   });
