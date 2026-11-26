@@ -2,7 +2,11 @@
 
 Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform. From the repository root, run `pnpm install`, then `pnpm --filter diffest-desktop dev` to start the desktop app.
 
+Diffest uses the `git` executable on your `PATH`. Enter a local checkout path in the Projects sidebar to open it and discover its linked worktrees.
+
 Run `pnpm build` to build and bundle the app for your current platform. Run `pnpm --filter diffest-desktop check` and `pnpm test:coverage --reporter=minimal` to check the Svelte frontend and its tests.
+
+Run `cargo test -p diffest-core` to test project registration and comparisons against temporary Git repositories and SQLite databases.
 
 ## Recommended IDE Setup
 

@@ -1,5 +1,6 @@
-import { mount, unmount } from "svelte";
-import { expect, it, onTestFinished } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { flushSync, mount, unmount } from "svelte";
+import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { ssr } from "../src/routes/+layout.js";
 import Page from "../src/routes/+page.svelte";
 
@@ -7,10 +8,208 @@ it("renders on the client for Tauri's static frontend", () => {
   expect(ssr).toBe(false);
 });
 
-it("shows the Diffest welcome screen", () => {
-  const target = document.createElement("div");
-  const page = mount(Page, { target });
-  onTestFinished(async () => unmount(page));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+});
+
+function render(): HTMLDivElement {
+  const target = document.createElement("div");
+  document.body.append(target);
+  const page = mount(Page, { target });
+  onTestFinished(async () => {
+    await unmount(page);
+    target.remove();
+  });
+  flushSync();
+  return target;
+}
+
+function element(target: HTMLElement, selector: string): HTMLElement {
+  const item = target.querySelector<HTMLElement>(selector);
+  if (!item) throw new Error(`Missing ${ selector }`);
+
+  return item;
+}
+
+function input(target: HTMLElement, selector: string, value: string): void {
+  const field = element(target, selector);
+  if (!(field instanceof HTMLInputElement)) throw new TypeError(`Expected an input for ${ selector }`);
+
+  field.value = value;
+  field.dispatchEvent(new Event("input"));
+  flushSync();
+}
+
+const main = {
+  path  : "/tmp/demo",
+  branch: "main",
+};
+const linked = {
+  path  : "/tmp/demo-worktree",
+  branch: "topic",
+};
+const project = {
+  id           : 1,
+  name         : "demo",
+  mainCheckout : main.path,
+  worktrees    : [main, linked],
+  worktreeError: null,
+};
+const revisions = {
+  branches: ["main", "topic"],
+  commits : [
+    {
+      id     : "abc123",
+      subject: "Initial commit",
+    },
+  ],
+};
+
+it("opens the added checkout, switches worktrees, and renders the selected unified patch", async () => {
+  const commands = vi.mocked(invoke);
+  commands
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce({
+      project,
+      checkout: linked.path,
+    })
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce({
+      start: "abc123",
+      end  : "def456",
+      files: [
+        {
+          status      : "A",
+          path        : "new.txt",
+          previousPath: null,
+          patch       : "+new content\n",
+        },
+        {
+          status      : "R",
+          path        : "after.txt",
+          previousPath: "before.txt",
+          patch       : "-old\n+new\n",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      start: "first",
+      end  : "def456",
+      files: [],
+    })
+    .mockResolvedValueOnce({
+      start: "abc123",
+      end  : "def456",
+      files: [],
+    });
+
+  const target = render();
   expect(target.querySelector("main h1")?.textContent).toBe("Diffest");
+  await vi.waitFor(() => {
+    expect(target.querySelector<HTMLButtonElement>("form button")?.disabled).toBe(false);
+  });
+
+  input(target, "#checkout", linked.path);
+  element(target, "form button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("topic");
+  });
+  expect(commands).toHaveBeenCalledWith("open_worktree", { checkout: linked.path });
+
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("main");
+  });
+  expect(commands).toHaveBeenCalledWith("open_worktree", { checkout: main.path });
+
+  input(target, "#base", "abc123");
+  input(target, "#target", "refs/heads/topic");
+  element(target, "#compare button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("pre")?.textContent).toBe("+new content\n");
+  });
+  expect(commands).toHaveBeenCalledWith("compare_revisions", {
+    checkout: main.path,
+    base    : "abc123",
+    target  : "refs/heads/topic",
+    mode    : "between",
+  });
+  expect(target.textContent).toContain("def456");
+  const rename = element(target, "[aria-label='Changed files'] button:nth-of-type(2)");
+  expect(rename.textContent).toContain("before.txt");
+  rename.click();
+  flushSync();
+  expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
+
+  const mode = element(target, "#mode");
+  if (!(mode instanceof HTMLSelectElement)) throw new TypeError("Expected the compare mode select");
+
+  mode.value = "divergence";
+  mode.dispatchEvent(new Event("change", { bubbles: true }));
+  flushSync();
+  element(target, "#compare button").click();
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain("No changes between these commits.");
+  });
+  expect(commands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ mode: "divergence" }));
+  expect(target.textContent).toContain("first");
+
+  mode.value = "between";
+  mode.dispatchEvent(new Event("change", { bubbles: true }));
+  flushSync();
+  element(target, "#compare button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("dd")?.textContent).toBe("abc123");
+  });
+  expect(commands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ mode: "between" }));
+});
+
+it("reopens a registered project and reports a comparison error", async () => {
+  const offline = {
+    id           : 2,
+    name         : "offline",
+    mainCheckout : "/tmp/offline",
+    worktrees    : [],
+    worktreeError: "Checkout is missing",
+  };
+  const detached = {
+    path  : linked.path,
+    branch: null,
+  };
+  const registered = {
+    ...project,
+    worktrees: [main, detached],
+  };
+  vi.mocked(invoke)
+    .mockResolvedValueOnce([registered, offline])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce({
+      project : registered,
+      checkout: detached.path,
+    })
+    .mockResolvedValueOnce(revisions)
+    .mockRejectedValueOnce("Unknown revision");
+  const target = render();
+  await vi.waitFor(() => {
+    expect(target.querySelector("aside ul button")?.textContent).toContain("main");
+  });
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("#base")).toBeTruthy();
+  });
+  expect(target.textContent).toContain("Checkout is missing");
+  input(target, "#checkout", detached.path);
+  element(target, "form button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("Detached HEAD");
+  });
+  expect(target.querySelectorAll("aside h2")).toHaveLength(2);
+  input(target, "#base", "missing");
+  element(target, "#compare button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[role=alert]")?.textContent).toBe("Unknown revision");
+  });
 });
