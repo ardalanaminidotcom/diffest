@@ -16,7 +16,7 @@ const PATCH_OPTIONS: &[&str] = &[
     "--unified=3",
 ];
 
-fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
         .current_dir(directory)

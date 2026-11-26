@@ -15,6 +15,7 @@ import { onMount } from "svelte";
 import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
 import CategorySettings from "../lib/category-settings.svelte";
 import DiffView from "../lib/diff-view.svelte";
+import FileDetails from "../lib/file-details.svelte";
 
 const statusLabels: Record<string, string> = {
   A: "Added",
@@ -386,6 +387,18 @@ function markWorktreePatch(patch: WorktreePatch): void {
                   disabled={busy}>
                   {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
                 </button>
+              {/if}
+              {#if selectedWorktreePatch}
+                <FileDetails checkout={activeCheckout} source={{ kind: "worktree", fingerprint: selectedWorktreePatch.fingerprint }} />
+              {:else if comparison}
+                <FileDetails checkout={activeCheckout} source={{
+                  kind: "comparison",
+                  start: comparison.start,
+                  end: comparison.end,
+                  path: selectedFile.path,
+                  previousPath: selectedFile.previousPath,
+                  status: selectedFile.status,
+                }} />
               {/if}
               <div class="diff-layout" role="group" aria-label="Diff layout">
                 <button type="button" aria-pressed={layout === "unified"} onclick={() => switchLayout("unified")} disabled={busy}>

@@ -2,8 +2,8 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, Comparison, ComparisonMode, DiffLayout, Project, Registration,
-    Revisions, WorktreePatch,
+    Application, CommitReview, Comparison, ComparisonMode, DiffLayout, FileDetails,
+    FileDetailsSource, Project, Registration, Revisions, WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -107,6 +107,15 @@ async fn set_review_layout(
     app.set_review_layout(&checkout, id, layout)
 }
 
+#[tauri::command]
+async fn read_file_details(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    source: FileDetailsSource,
+) -> Result<FileDetails, String> {
+    app.file_details(&checkout, source)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -128,6 +137,7 @@ pub fn run() {
             set_worktree_patch_reviewed,
             read_review_layout,
             set_review_layout,
+            read_file_details,
             category_settings::read_category_settings,
             category_settings::save_category_settings,
             category_settings::save_default_diff_layout,
