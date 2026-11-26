@@ -280,11 +280,14 @@ it("reopens a registered project and reports a comparison error", async () => {
     expect(target.querySelector("#base")).toBeTruthy();
   });
   expect(target.textContent).toContain("Checkout is missing");
+  element(target, "#projects .project-list summary").click();
+  expect(target.querySelector<HTMLDetailsElement>("#projects .project-list details")?.open).toBe(false);
   element(target, "#projects button[aria-label='Add checkout']").click();
   await vi.waitFor(() => {
     expect(target.querySelector("[aria-pressed=true]")?.textContent).toContain("Detached HEAD");
+    expect(target.querySelector<HTMLDetailsElement>("#projects .project-list details")?.open).toBe(true);
   });
-  expect(target.querySelectorAll("aside h2")).toHaveLength(2);
+  expect(target.querySelectorAll("#projects .project-list summary")).toHaveLength(2);
   element(target, "[aria-controls='compare-setup']").click();
   flushSync();
   input(target, "#base", "missing");

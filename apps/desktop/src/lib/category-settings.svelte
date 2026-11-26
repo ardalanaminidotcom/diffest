@@ -75,12 +75,23 @@ async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }
     savingLayout = false;
   }
 }
+const errorAnnouncement = $derived([
+  error,
+  settings?.global.error,
+  loadedCheckout === mainCheckout ? settings?.project?.error : null,
+].filter(Boolean).join(" "));
 </script>
 
 <svelte:window onfocus={refresh} />
 
 <details name="workspace-menu" class="category-settings">
-  <summary>Settings</summary>
+  <summary title="Settings" aria-label={errorAnnouncement ? "Settings, error" : "Settings"}
+    class:has-error={Boolean(errorAnnouncement)}>
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+      <path d="m6.8 1.8-.4 1.4-1.1.6-1.4-.4-1.2 2 .9 1.2v1.3l-.9 1.2 1.2 2 1.4-.4 1.1.6.4 1.4h2.4l.4-1.4 1.1-.6 1.4.4 1.2-2-.9-1.2V6.6l.9-1.2-1.2-2-1.4.4-1.1-.6-.4-1.4Z" transform="translate(0 .75)" />
+      <circle cx="8" cy="8" r="2" />
+    </svg>
+  </summary>
   <div class="settings-panel">
     {#if settings}
       <label for="default-diff-layout">Default diff layout</label>
@@ -113,18 +124,18 @@ async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }
         {/key}
       {/if}
     {/if}
+    {#if error}
+      <p role="alert">{error}</p>
+    {/if}
+    {#if settings?.global.error}
+      <p role="alert">{settings.global.error}</p>
+    {/if}
+    {#if loadedCheckout === mainCheckout && settings?.project?.error}
+      <p role="alert">{settings.project.error}</p>
+    {/if}
   </div>
 </details>
-
-{#if error}
-  <p role="alert">{error}</p>
-{/if}
-{#if settings?.global.error}
-  <p role="alert">{settings.global.error}</p>
-{/if}
-{#if loadedCheckout === mainCheckout && settings?.project?.error}
-  <p role="alert">{settings.project.error}</p>
-{/if}
+<span class="settings-announcement" aria-live="polite">{errorAnnouncement}</span>
 
 <style>
 summary {
@@ -132,25 +143,54 @@ summary {
   background: var(--canvas);
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 0.3rem 0.52rem;
-  font-size: 0.85rem;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: max-content;
+  padding: 0.23rem;
   list-style: none;
 }
 summary::-webkit-details-marker { display: none; }
+summary svg { width: 1rem; height: 1rem; stroke: currentColor; stroke-width: 1.4; }
 summary:hover, details[open] > summary { background: var(--selection); }
+details[open] > summary { z-index: 3; }
+summary.has-error::after {
+  content: "";
+  position: absolute;
+  inset: 0.12rem 0.12rem auto auto;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 50%;
+  background: var(--removed-ink);
+}
+.settings-announcement {
+  position: absolute;
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
 .settings-panel {
   position: absolute;
   z-index: 2;
   box-sizing: border-box;
-  inset: 100% 0 auto auto;
-  width: min(100%, 34rem);
+  inset: auto auto 100% 0.85rem;
+  width: min(calc(100vw - 1.7rem), 34rem);
   max-height: min(80dvh, calc(100dvh - 9rem));
   overflow: auto;
   padding: 0.85rem 1rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0 0 0 8px;
+  border-radius: 8px;
   box-shadow: 0 6px 18px #0002;
+}
+@media (max-width: 520px) {
+  .settings-panel {
+    position: fixed;
+    inset: auto 0.85rem 0.85rem;
+    max-height: 45dvh;
+  }
 }
 label, select { margin-block-start: 0.65rem; }
 select {

@@ -70,6 +70,7 @@ let busy = $state(false);
 let savedReviewsOpen = $state(false);
 let compareOpen = $state(false);
 let filesCollapsed = $state(false);
+let projectSidebar: HTMLElement | undefined = $state();
 let fileBody: HTMLDivElement | undefined = $state();
 let fileListToggle: HTMLButtonElement | undefined = $state();
 const activeProject = $derived(projects.find(project => project.id === activeProjectId));
@@ -120,6 +121,12 @@ function readReviewLayout(path: string, id: number | null): Promise<DiffLayout |
   });
 }
 
+async function revealProject(id: number): Promise<void> {
+  await tick();
+  const group = projectSidebar?.querySelector<HTMLDetailsElement>(`#project-${ id }`);
+  if (group) group.open = true;
+}
+
 async function openWorktree(path: string, projectId: number, loadChanges = true): Promise<void> {
   const nextRevisions = await invoke<Revisions>("open_worktree", { checkout: path });
   const patches = loadChanges ? await invoke<WorktreePatch[]>("open_worktree_review", { checkout: path }) : null;
@@ -150,6 +157,7 @@ function addProject(): void {
     projects = [...projects.filter(item => item.id !== project.id), project]
       .toSorted((first, second) => first.id - second.id);
     await openWorktree(registration.checkout, project.id);
+    await revealProject(project.id);
   });
 }
 
@@ -234,6 +242,7 @@ function openReview(project: Project, id: number): void {
       summary,
       reviewedFiles: marks,
     });
+    await revealProject(project.id);
   });
 }
 
@@ -363,41 +372,45 @@ function stageWorktreePatch(patch: WorktreePatch): void {
           {worktreeReview ? "Refresh uncommitted changes" : "Review uncommitted changes"}
         </button>
       {/if}
-      <CategorySettings {mainCheckout} {paths} bind:categories bind:defaultLayout />
     </div>
   </header>
 
   <div class="workspace-shell">
-    <aside id="projects" aria-label="Projects">
-      <div class="panel-label">
+    <aside id="projects" aria-label="Projects" bind:this={projectSidebar}>
+      <header class="panel-label">
         <span>Projects</span>
         <button class="icon-button" type="button" aria-label="Add checkout" title="Add checkout"
           onclick={addProject} disabled={busy}>
           <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" /></svg>
         </button>
+      </header>
+      <div class="project-list">
+        {#each projects as project (project.id)}
+          <details id={`project-${ project.id }`} open>
+            <summary title={project.mainCheckout ?? project.name}>{project.name}</summary>
+            {#if project.worktreeError}
+              <p>{project.worktreeError}</p>
+            {/if}
+            <ul>
+              {#each project.worktrees as worktree (worktree.path)}
+                <li>
+                  <button
+                    type="button"
+                    aria-pressed={activeCheckout === worktree.path}
+                    onclick={() => run(() => openWorktree(worktree.path, project.id))}
+                    disabled={busy}>
+                    <strong>{worktree.branch ?? "Detached HEAD"}</strong>
+                    <small>{worktree.path}</small>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/each}
       </div>
-      {#each projects as project (project.id)}
-        <section aria-label={project.name}>
-          <h2 title={project.mainCheckout ?? project.name}>{project.name}</h2>
-          {#if project.worktreeError}
-            <p>{project.worktreeError}</p>
-          {/if}
-          <ul>
-            {#each project.worktrees as worktree (worktree.path)}
-              <li>
-                <button
-                  type="button"
-                  aria-pressed={activeCheckout === worktree.path}
-                  onclick={() => run(() => openWorktree(worktree.path, project.id))}
-                  disabled={busy}>
-                  <strong>{worktree.branch ?? "Detached HEAD"}</strong>
-                  <small>{worktree.path}</small>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        </section>
-      {/each}
+      <footer class="project-footer">
+        <CategorySettings {mainCheckout} {paths} bind:categories bind:defaultLayout />
+      </footer>
     </aside>
 
     <section class="workspace" aria-label="Review workspace" aria-busy={busy}>
@@ -691,10 +704,30 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
 .workspace-shell { display: grid; grid-template-columns: minmax(10rem, 20%) minmax(0, 1fr); }
 .workspace { position: relative; display: flex; flex-direction: column; }
 .workspace:has(.empty-state) { overflow: auto; }
-#projects { overflow: auto; padding: 0.85rem; background: var(--surface); border-inline-end: 1px solid var(--border); }
-.panel-label { display: flex; align-items: center; justify-content: space-between; gap: 0.45rem; font-weight: 700; margin-block-end: 0.75rem; }
-aside h2, .saved-reviews h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+#projects {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  border-inline-end: 1px solid var(--border);
+}
+.project-list { overflow: auto; padding: 0.35rem 0.65rem; }
+.project-list summary { padding: 0.4rem 0.2rem; cursor: pointer; font-weight: 650; overflow-wrap: anywhere; }
+.project-list summary:hover { background: var(--toolbar); }
+.project-footer { position: relative; z-index: 2; border-block-start: 1px solid var(--border); padding: 0.55rem 0.85rem; }
+.panel-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.55rem 0.85rem;
+  border-block-end: 1px solid var(--border);
+  font-weight: 700;
+}
+.saved-reviews h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
 aside ul, .saved-reviews ul { list-style: none; padding: 0; margin: 0; }
+.project-list ul { padding-inline-start: 0.45rem; }
 aside li + li, .saved-reviews li + li { margin-block-start: 0.2rem; }
 aside li button, .saved-reviews li button {
   display: block;
@@ -826,7 +859,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 
 @media (max-width: 520px) {
   .workspace-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  #projects { max-block-size: 20dvh; border-inline-end: 0; border-block-end: 1px solid var(--border); }
+  #projects { max-block-size: max(8rem, 25dvh); border-inline-end: 0; border-block-end: 1px solid var(--border); }
   .changes { grid-template-columns: minmax(0, 1fr) minmax(9rem, 34%); }
   .file-row { padding-inline: 0.22rem; gap: 0.24rem; }
   .line-counts { gap: 0.16rem; }
