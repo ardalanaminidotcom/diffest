@@ -10,8 +10,29 @@ it("renders on the client for Tauri's static frontend", () => {
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+const revisionCommands = vi.fn();
 beforeEach(() => {
-  vi.mocked(invoke).mockReset();
+  revisionCommands.mockReset();
+  vi.mocked(invoke).mockImplementation(async (command, parameters) => {
+    if (command !== "read_category_settings") return revisionCommands(command, parameters);
+
+    const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
+    const paths: unknown[] = Array.isArray(filePaths) ? filePaths : [];
+    return {
+      global: {
+        path   : "/home/demo/.diffest/settings.json",
+        version: "missing",
+        error  : null,
+        custom : false,
+        rules  : [],
+      },
+      project   : null,
+      categories: paths.map(path => ({
+        category   : path === "after.txt" ? "Tests" : "Other",
+        subcategory: path === "after.txt" ? "Unit" : null,
+      })),
+    };
+  });
 });
 
 function render(): HTMLDivElement {
@@ -68,7 +89,7 @@ const revisions = {
 };
 
 it("opens the added checkout, switches worktrees, and renders the selected unified patch", async () => {
-  const commands = vi.mocked(invoke);
+  const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce({
@@ -138,8 +159,13 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     mode    : "between",
   });
   expect(target.textContent).toContain("def456");
-  const rename = element(target, "[aria-label='Changed files'] button:nth-of-type(2)");
+  await vi.waitFor(() => {
+    const groups = target.querySelectorAll("[aria-label='Changed files'] summary");
+    expect([...groups].map(group => group.textContent)).toEqual(["Other", "Tests", "Unit"]);
+  });
+  const rename = element(target, "[aria-label='Changed files'] details details button");
   expect(rename.textContent).toContain("before.txt");
+  expect(rename.textContent).toContain("Renamed");
   rename.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
@@ -183,7 +209,7 @@ it("reopens a registered project and reports a comparison error", async () => {
     ...project,
     worktrees: [main, detached],
   };
-  vi.mocked(invoke)
+  revisionCommands
     .mockResolvedValueOnce([registered, offline])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({

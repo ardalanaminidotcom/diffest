@@ -1,3 +1,6 @@
+mod category_settings;
+
+use diffest_core::category_settings::CategorySettings;
 use diffest_core::{Application, Comparison, ComparisonMode, Project, Registration, Revisions};
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -40,13 +43,16 @@ pub fn run() {
         .setup(|app| {
             let database = app.path().app_data_dir()?.join("diffest.sqlite3");
             app.manage(Application::new(database));
+            app.manage(CategorySettings::new(&app.path().home_dir()?));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_projects,
             register_project,
             open_worktree,
-            compare_revisions
+            compare_revisions,
+            category_settings::read_category_settings,
+            category_settings::save_category_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

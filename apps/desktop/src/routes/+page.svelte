@@ -1,7 +1,10 @@
 <script lang="ts">
+import type { FileCategory } from "../lib/category-settings.js";
 import type { Comparison, ComparisonMode, Project, Registration, Revisions } from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
+import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
+import CategorySettings from "../lib/category-settings.svelte";
 
 const statusLabels: Record<string, string> = {
   A: "Added",
@@ -21,6 +24,10 @@ let mode = $state<ComparisonMode>("between");
 let comparison = $state<Comparison | null>(null);
 let selectedIndex = $state(0);
 let selectedFile = $derived(comparison?.files[selectedIndex]);
+let activeProject = $derived(projects.find(project => project.worktrees.some(tree => tree.path === activeCheckout)));
+let mainCheckout = $derived(activeProject?.mainCheckout);
+let paths = $derived(comparison?.files.map(file => file.path) ?? []);
+let categories = $state<FileCategory[]>([]);
 let error = $state("");
 let busy = $state(false);
 
@@ -115,6 +122,8 @@ function compare(event: SubmitEvent): void {
       <p role="alert">{error}</p>
     {/if}
 
+    <CategorySettings {mainCheckout} {paths} bind:categories />
+
     {#if revisions}
       <form id="compare" onsubmit={compare}>
         <label for="base">Base
@@ -150,8 +159,9 @@ function compare(event: SubmitEvent): void {
         </dl>
         {#if selectedFile}
           <div class="changes">
-            <nav aria-label="Changed files">
-              {#each comparison.files as file, index (index)}
+            <CategorizedFileTree {paths} {categories}>
+              {#snippet entry(index)}
+                {@const file = comparison!.files[index]}
                 <button type="button" aria-pressed={selectedIndex === index} onclick={() => selectedIndex = index}>
                   <small>{statusLabels[file.status] ?? file.status}</small>
                   {#if file.previousPath}
@@ -159,8 +169,8 @@ function compare(event: SubmitEvent): void {
                   {/if}
                   {file.path}
                 </button>
-              {/each}
-            </nav>
+              {/snippet}
+            </CategorizedFileTree>
             <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
             <pre aria-label="Unified patch" tabindex="0">{selectedFile.patch}</pre>
           </div>
@@ -204,7 +214,7 @@ aside {
 
 h1 { margin: 0 0 1rem; font-size: 1.5rem; }
 h2 { margin: 1.25rem 0 0.25rem; font-size: 1rem; overflow-wrap: anywhere; }
-form, label, nav { display: grid; gap: 0.35rem; }
+form, label { display: grid; gap: 0.35rem; }
 label, small, .endpoints { font-size: 0.8rem; }
 ul { list-style: none; padding: 0; margin: 0; }
 
@@ -222,7 +232,7 @@ input, select, button {
 button:not(:disabled) { cursor: pointer; }
 button[aria-pressed="true"] { background: color-mix(in srgb, AccentColor 18%, Canvas); border-color: AccentColor; }
 li button { width: 100%; margin-block: 0.15rem; }
-li button, nav button { text-align: start; overflow-wrap: anywhere; }
+li button, .changes button { text-align: start; overflow-wrap: anywhere; }
 small { display: block; }
 
 #compare {
