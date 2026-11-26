@@ -11,6 +11,7 @@ interface Project {
   mainCheckout: string;
   worktrees: Worktree[];
   worktreeError: string | null;
+  savedReviews: CommitReviewSummary[];
 }
 
 interface Registration {
@@ -36,11 +37,30 @@ interface ChangedFile {
 }
 
 interface Comparison {
+  baseLabel: string;
+  targetLabel: string;
+  mode: ComparisonMode;
+  base: string;
   start: string;
   end: string;
   files: ChangedFile[];
 }
 
+interface CommitReviewSummary {
+  id: number;
+  baseLabel: string;
+  targetLabel: string;
+  start: string;
+  end: string;
+  fileCount: number;
+  reviewedCount: number;
+}
+
+interface CommitReview {
+  comparison: Comparison;
+  reviewedFiles: number[];
+}
+
 type ComparisonMode = "between" | "divergence";
 
-export type { Comparison, ComparisonMode, Project, Registration, Revisions };
+export type { CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions };

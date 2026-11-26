@@ -1,4 +1,6 @@
-use diffest_core::{Application, Comparison, ComparisonMode, Project, Registration, Revisions};
+use diffest_core::{
+    Application, CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions,
+};
 use std::path::PathBuf;
 use tauri::{Manager, State};
 
@@ -34,6 +36,35 @@ async fn compare_revisions(
     app.compare_revisions(&checkout, &base, &target, mode)
 }
 
+#[tauri::command]
+async fn save_commit_review(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    comparison: Comparison,
+) -> Result<i64, String> {
+    app.save_commit_review(&checkout, &comparison)
+}
+
+#[tauri::command]
+async fn open_commit_review(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    id: i64,
+) -> Result<CommitReview, String> {
+    app.open_commit_review(&checkout, id)
+}
+
+#[tauri::command]
+async fn set_commit_file_reviewed(
+    app: State<'_, Application>,
+    checkout: PathBuf,
+    id: i64,
+    file_index: usize,
+    reviewed: bool,
+) -> Result<Vec<usize>, String> {
+    app.set_commit_file_reviewed(&checkout, id, file_index, reviewed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -46,7 +77,10 @@ pub fn run() {
             list_projects,
             register_project,
             open_worktree,
-            compare_revisions
+            compare_revisions,
+            save_commit_review,
+            open_commit_review,
+            set_commit_file_reviewed
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

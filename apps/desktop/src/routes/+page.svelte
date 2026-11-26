@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Comparison, ComparisonMode, Project, Registration, Revisions } from "../lib/revisions.js";
+import type { CommitReview, Comparison, ComparisonMode, Project, Registration, Revisions } from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
 
@@ -11,14 +11,19 @@ const statusLabels: Record<string, string> = {
   T: "Type changed",
 };
 
+type ReviewProgress = Pick<CommitReview, "reviewedFiles"> & { id: number; };
+
 let projects = $state<Project[]>([]);
 let checkout = $state("");
 let activeCheckout = $state("");
+let activeProjectId = $state<number>();
 let revisions = $state<Revisions>();
 let base = $state("");
 let target = $state("HEAD");
 let mode = $state<ComparisonMode>("between");
 let comparison = $state<Comparison | null>(null);
+let review = $state<ReviewProgress | null>(null);
+let reviewedFiles = $derived(new Set(review?.reviewedFiles));
 let selectedIndex = $state(0);
 let selectedFile = $derived(comparison?.files[selectedIndex]);
 let error = $state("");
@@ -42,13 +47,15 @@ onMount(() => {
   });
 });
 
-async function openWorktree(path: string): Promise<void> {
+async function openWorktree(path: string, projectId: number): Promise<void> {
   revisions = await invoke<Revisions>("open_worktree", { checkout: path });
   activeCheckout = path;
+  activeProjectId = projectId;
   base = "";
   target = "HEAD";
   mode = "between";
   comparison = null;
+  review = null;
 }
 
 function addProject(event: SubmitEvent): void {
@@ -59,7 +66,7 @@ function addProject(event: SubmitEvent): void {
     projects = [...projects.filter(item => item.id !== project.id), project]
       .toSorted((first, second) => first.id - second.id);
     checkout = "";
-    await openWorktree(registration.checkout);
+    await openWorktree(registration.checkout, project.id);
   });
 }
 
@@ -72,7 +79,77 @@ function compare(event: SubmitEvent): void {
       target  : target.trim(),
       mode,
     });
+    review = null;
     selectedIndex = 0;
+  });
+}
+
+function reviewStatus(fileCount: number, reviewedCount: number): string {
+  return fileCount === reviewedCount ? "Reviewed" : `${ reviewedCount } of ${ fileCount } reviewed`;
+}
+
+function updateReview(id: number, displayed: Comparison, marks: number[]): void {
+  review = {
+    id,
+    reviewedFiles: marks,
+  };
+  const summary = {
+    id,
+    baseLabel    : displayed.baseLabel,
+    targetLabel  : displayed.targetLabel,
+    start        : displayed.start,
+    end          : displayed.end,
+    fileCount    : displayed.files.length,
+    reviewedCount: marks.length,
+  };
+  projects = projects.map(project => (project.id === activeProjectId
+    ? {
+        ...project,
+        savedReviews: [...project.savedReviews.filter(item => item.id !== id), summary]
+          .toSorted((first, second) => second.id - first.id),
+      }
+    : project));
+}
+
+function saveReview(displayed: Comparison): void {
+  void run(async () => {
+    const id = await invoke<number>("save_commit_review", {
+      checkout  : activeCheckout,
+      comparison: displayed,
+    });
+    updateReview(id, displayed, []);
+  });
+}
+
+function openReview(project: Project, id: number): void {
+  const path = project.id === activeProjectId ? activeCheckout : project.worktrees[0]?.path;
+  if (!path) return;
+
+  void run(async () => {
+    if (path !== activeCheckout) await openWorktree(path, project.id);
+
+    const saved = await invoke<CommitReview>("open_commit_review", {
+      checkout: path,
+      id,
+    });
+    comparison = saved.comparison;
+    base = comparison.baseLabel;
+    target = comparison.targetLabel;
+    mode = comparison.mode;
+    selectedIndex = 0;
+    updateReview(id, comparison, saved.reviewedFiles);
+  });
+}
+
+function markFile(id: number, displayed: Comparison, fileIndex: number): void {
+  void run(async () => {
+    const marks = await invoke<number[]>("set_commit_file_reviewed", {
+      checkout: activeCheckout,
+      id,
+      fileIndex,
+      reviewed: !reviewedFiles.has(fileIndex),
+    });
+    updateReview(id, displayed, marks);
   });
 }
 </script>
@@ -98,7 +175,7 @@ function compare(event: SubmitEvent): void {
               <button
                 type="button"
                 aria-pressed={activeCheckout === worktree.path}
-                onclick={() => run(() => openWorktree(worktree.path))}
+                onclick={() => run(() => openWorktree(worktree.path, project.id))}
                 disabled={busy}>
                 <strong>{worktree.branch ?? "Detached HEAD"}</strong>
                 <small>{worktree.path}</small>
@@ -106,6 +183,26 @@ function compare(event: SubmitEvent): void {
             </li>
           {/each}
         </ul>
+        {#if project.savedReviews.length}
+          <section aria-label="Saved commit reviews">
+            <h3>Saved commit reviews</h3>
+            <ul>
+              {#each project.savedReviews as saved (saved.id)}
+                <li>
+                  <button
+                    type="button"
+                    aria-pressed={review?.id === saved.id}
+                    onclick={() => openReview(project, saved.id)}
+                    disabled={busy || !project.worktrees.length}>
+                    {saved.baseLabel} → {saved.targetLabel}
+                    <small><code>{saved.start.slice(0, 7)} → {saved.end.slice(0, 7)}</code></small>
+                    <small>{reviewStatus(saved.fileCount, saved.reviewedCount)}</small>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       </section>
     {/each}
   </aside>
@@ -144,10 +241,16 @@ function compare(event: SubmitEvent): void {
       </form>
 
       {#if comparison}
+        {@const displayed = comparison}
         <dl class="endpoints">
           <dt>Effective start</dt><dd><code>{comparison.start}</code></dd>
           <dt>Effective end</dt><dd><code>{comparison.end}</code></dd>
         </dl>
+        {#if review}
+          <p id="review-progress" role="status">{reviewStatus(comparison.files.length, review.reviewedFiles.length)}</p>
+        {:else}
+          <button id="save-review" type="button" onclick={() => saveReview(displayed)} disabled={busy}>Save review</button>
+        {/if}
         {#if selectedFile}
           <div class="changes">
             <nav aria-label="Changed files">
@@ -158,11 +261,24 @@ function compare(event: SubmitEvent): void {
                     {file.previousPath} →
                   {/if}
                   {file.path}
+                  {#if review}<small>{reviewedFiles.has(index) ? "Reviewed" : "Unreviewed"}</small>{/if}
                 </button>
               {/each}
             </nav>
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
-            <pre aria-label="Unified patch" tabindex="0">{selectedFile.patch}</pre>
+            <div class="file-detail">
+              {#if review}
+                {@const current = review}
+                <button
+                  id="review-file"
+                  type="button"
+                  onclick={() => markFile(current.id, displayed, selectedIndex)}
+                  disabled={busy}>
+                  {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
+                </button>
+              {/if}
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
+              <pre aria-label="Unified patch" tabindex="0">{selectedFile.patch}</pre>
+            </div>
           </div>
         {:else}
           <p>No changes between these commits.</p>
@@ -204,6 +320,7 @@ aside {
 
 h1 { margin: 0 0 1rem; font-size: 1.5rem; }
 h2 { margin: 1.25rem 0 0.25rem; font-size: 1rem; overflow-wrap: anywhere; }
+h3 { margin: 0.75rem 0 0.25rem; font-size: 0.85rem; }
 form, label, nav { display: grid; gap: 0.35rem; }
 label, small, .endpoints { font-size: 0.8rem; }
 ul { list-style: none; padding: 0; margin: 0; }
@@ -241,7 +358,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
   grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
   align-items: start;
   gap: 0.65rem;
+  margin-block-start: 0.65rem;
 }
+
+.file-detail { min-width: 0; }
+.file-detail button { margin-block-end: 0.5rem; }
 
 pre {
   margin: 0;

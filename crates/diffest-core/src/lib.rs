@@ -1,4 +1,7 @@
 mod git;
+mod reviews;
+
+pub use reviews::{CommitReview, CommitReviewSummary};
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,7 @@ pub struct Project {
     pub main_checkout: PathBuf,
     pub worktrees: Vec<Worktree>,
     pub worktree_error: Option<String>,
+    pub saved_reviews: Vec<CommitReviewSummary>,
 }
 
 #[derive(Serialize)]
@@ -46,21 +50,26 @@ pub struct Commit {
     pub subject: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonMode {
     Between,
     Divergence,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Comparison {
+    pub base_label: String,
+    pub target_label: String,
+    pub mode: ComparisonMode,
+    pub base: String,
     pub start: String,
     pub end: String,
     pub files: Vec<ChangedFile>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
     pub status: char,
@@ -82,6 +91,7 @@ impl Project {
             main_checkout,
             worktrees: Vec::new(),
             worktree_error: None,
+            saved_reviews: Vec::new(),
         }
     }
 }
@@ -95,9 +105,8 @@ impl Application {
         let checkout = git::checkout_root(checkout)?;
         let common_directory = git::common_directory(&checkout)?;
         let (mut main_checkout, mut worktrees) = git::worktrees(&common_directory, &checkout)?;
-        let (id, registered_main): (i64, String) = self
-            .connect()?
-            .query_row(
+        let connection = self.connect()?;
+        let (id, registered_main): (i64, String) = connection.query_row(
                 "INSERT INTO projects (common_directory, main_checkout) VALUES (?1, ?2)
                  ON CONFLICT (common_directory) DO UPDATE SET main_checkout = COALESCE(
                     NULLIF(excluded.main_checkout, excluded.common_directory), projects.main_checkout
@@ -113,6 +122,7 @@ impl Application {
         }
         let mut project = Project::new(id, main_checkout);
         project.worktrees = worktrees;
+        project.saved_reviews = reviews::list(&connection, id)?;
         Ok(Registration { project, checkout })
     }
 
@@ -132,23 +142,25 @@ impl Application {
                 .collect::<rusqlite::Result<Vec<_>>>()
         };
         let rows = read_projects().map_err(|error| format!("Cannot list projects: {error}"))?;
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|(id, common_directory, main_checkout)| {
-                match git::worktrees(Path::new(&common_directory), Path::new(&main_checkout)) {
-                    Ok((main_checkout, worktrees)) => {
-                        let mut project = Project::new(id, main_checkout);
-                        project.worktrees = worktrees;
-                        project
-                    }
-                    Err(error) => {
-                        let mut project = Project::new(id, main_checkout.into());
-                        project.worktree_error = Some(error);
-                        project
-                    }
-                }
+                let mut project =
+                    match git::worktrees(Path::new(&common_directory), Path::new(&main_checkout)) {
+                        Ok((main_checkout, worktrees)) => {
+                            let mut project = Project::new(id, main_checkout);
+                            project.worktrees = worktrees;
+                            project
+                        }
+                        Err(error) => {
+                            let mut project = Project::new(id, main_checkout.into());
+                            project.worktree_error = Some(error);
+                            project
+                        }
+                    };
+                project.saved_reviews = reviews::list(&connection, id)?;
+                Ok(project)
             })
-            .collect())
+            .collect()
     }
 
     pub fn open_worktree(&self, checkout: &Path) -> Result<Revisions, String> {
@@ -163,14 +175,24 @@ impl Application {
         mode: ComparisonMode,
     ) -> Result<Comparison, String> {
         let checkout = git::checkout_root(checkout)?;
+        let base_label = base.into();
+        let target_label = target.into();
         let base = git::resolve_commit(&checkout, base)?;
         let end = git::resolve_commit(&checkout, target)?;
         let start = match mode {
-            ComparisonMode::Between => base,
+            ComparisonMode::Between => base.clone(),
             ComparisonMode::Divergence => git::merge_base(&checkout, &base, &end)?,
         };
         let files = git::compare_commits(&checkout, &start, &end)?;
-        Ok(Comparison { start, end, files })
+        Ok(Comparison {
+            base_label,
+            target_label,
+            mode,
+            base,
+            start,
+            end,
+            files,
+        })
     }
 
     fn connect(&self) -> Result<Connection, String> {
@@ -187,6 +209,7 @@ impl Application {
                     main_checkout TEXT NOT NULL
                 )",
             )?;
+            connection.execute_batch(reviews::SCHEMA)?;
             Ok::<_, rusqlite::Error>(connection)
         };
         open_database().map_err(|error| format!("Cannot open {}: {error}", self.database.display()))
