@@ -1,4 +1,4 @@
-use crate::{Application, ChangedFile, Comparison, ComparisonMode, git, path_text};
+use crate::{Application, ChangedFile, Comparison, ComparisonMode, DiffLayout, git, path_text};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::path::Path;
@@ -79,6 +79,15 @@ impl Application {
         checkout: &Path,
         comparison: &Comparison,
     ) -> Result<i64, String> {
+        self.save_commit_review_with_layout(checkout, comparison, None)
+    }
+
+    pub fn save_commit_review_with_layout(
+        &self,
+        checkout: &Path,
+        comparison: &Comparison,
+        layout: Option<DiffLayout>,
+    ) -> Result<i64, String> {
         let mut connection = self.connect()?;
         let project = project_id(&connection, checkout)?;
         let mut save = || {
@@ -115,6 +124,12 @@ impl Application {
                 ])?;
             }
             drop(insert);
+            if let Some(layout) = layout {
+                transaction.execute(
+                    "INSERT INTO commit_review_layouts (review_id, split) VALUES (?1, ?2)",
+                    params![id, layout == DiffLayout::Split],
+                )?;
+            }
             transaction.commit()?;
             Ok::<_, rusqlite::Error>(id)
         };
@@ -213,7 +228,7 @@ impl Application {
     }
 }
 
-fn project_id(connection: &Connection, checkout: &Path) -> Result<i64, String> {
+pub(crate) fn project_id(connection: &Connection, checkout: &Path) -> Result<i64, String> {
     let checkout = git::checkout_root(checkout)?;
     let common_directory = git::common_directory(&checkout)?;
     connection

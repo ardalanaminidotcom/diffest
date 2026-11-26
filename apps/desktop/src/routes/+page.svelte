@@ -4,6 +4,7 @@ import type {
   CommitReview,
   Comparison,
   ComparisonMode,
+  DiffLayout,
   Project,
   Registration,
   Revisions,
@@ -13,6 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
 import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
 import CategorySettings from "../lib/category-settings.svelte";
+import DiffView from "../lib/diff-view.svelte";
 
 const statusLabels: Record<string, string> = {
   A: "Added",
@@ -37,6 +39,9 @@ let comparison = $state<Comparison | null>(null);
 let review = $state<ReviewProgress | null>(null);
 let worktreeReview = $state<WorktreePatch[] | null>(null);
 let reviewedFiles = $derived(new Set(review?.reviewedFiles));
+let defaultLayout = $state<DiffLayout>("unified");
+let layoutOverride = $state<DiffLayout | null>(null);
+let layout = $derived(layoutOverride ?? defaultLayout);
 let selectedIndex = $state(0);
 let files = $derived(worktreeReview ?? comparison?.files ?? []);
 let selectedFile = $derived(files[selectedIndex]);
@@ -65,9 +70,17 @@ onMount(() => {
   });
 });
 
+function readReviewLayout(path: string, id: number | null): Promise<DiffLayout | null> {
+  return invoke("read_review_layout", {
+    checkout: path,
+    id,
+  });
+}
+
 async function openWorktree(path: string, projectId: number, ongoing = worktreeReview !== null): Promise<void> {
   const nextRevisions = await invoke<Revisions>("open_worktree", { checkout: path });
   const patches = ongoing ? await invoke<WorktreePatch[]>("open_worktree_review", { checkout: path }) : null;
+  layoutOverride = ongoing ? await readReviewLayout(path, null) : null;
   revisions = nextRevisions;
   activeCheckout = path;
   activeProjectId = projectId;
@@ -103,6 +116,7 @@ function compare(event: SubmitEvent): void {
     });
     review = null;
     worktreeReview = null;
+    layoutOverride = null;
     selectedIndex = 0;
   });
 }
@@ -141,6 +155,7 @@ function saveReview(displayed: Comparison): void {
     const id = await invoke<number>("save_commit_review", {
       checkout  : activeCheckout,
       comparison: displayed,
+      layout    : layoutOverride,
     });
     updateReview(id, displayed, []);
   });
@@ -157,6 +172,7 @@ function openReview(project: Project, id: number): void {
       checkout: path,
       id,
     });
+    layoutOverride = await readReviewLayout(path, id);
     comparison = saved.comparison;
     base = comparison.baseLabel;
     target = comparison.targetLabel;
@@ -191,7 +207,23 @@ function showWorktreeReview(patches: WorktreePatch[]): void {
 function refreshWorktreeReview(): void {
   void run(async () => {
     const patches = await invoke<WorktreePatch[]>("open_worktree_review", { checkout: activeCheckout });
+    layoutOverride = await readReviewLayout(activeCheckout, null);
     showWorktreeReview(patches);
+  });
+}
+
+function switchLayout(next: DiffLayout): void {
+  if (next === layout) return;
+
+  void run(async () => {
+    if (review || worktreeReview) {
+      await invoke("set_review_layout", {
+        checkout: activeCheckout,
+        id      : review?.id ?? null,
+        layout  : next,
+      });
+    }
+    layoutOverride = next;
   });
 }
 
@@ -265,7 +297,7 @@ function markWorktreePatch(patch: WorktreePatch): void {
       <p role="alert">{error}</p>
     {/if}
 
-    <CategorySettings {mainCheckout} {paths} bind:categories />
+    <CategorySettings {mainCheckout} {paths} bind:categories bind:defaultLayout />
 
     {#if revisions}
       <form id="compare" onsubmit={compare}>
@@ -355,8 +387,15 @@ function markWorktreePatch(patch: WorktreePatch): void {
                   {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
                 </button>
               {/if}
-              <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
-              <pre aria-label="Unified patch" tabindex="0">{selectedFile.patch}</pre>
+              <div class="diff-layout" role="group" aria-label="Diff layout">
+                <button type="button" aria-pressed={layout === "unified"} onclick={() => switchLayout("unified")} disabled={busy}>
+                  Unified
+                </button>
+                <button type="button" aria-pressed={layout === "split"} onclick={() => switchLayout("split")} disabled={busy}>
+                  Split
+                </button>
+              </div>
+              <DiffView patch={selectedFile.patch} {layout} />
             </div>
           </div>
         {:else}
@@ -444,15 +483,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .file-detail { min-width: 0; }
 .file-detail button { margin-block-end: 0.5rem; }
 
-pre {
-  margin: 0;
-  padding: 0.75rem;
-  overflow: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  line-height: 1.45;
-}
+.diff-layout { display: flex; gap: 0.35rem; }
 
 @media (max-width: 650px) {
   .changes { grid-template-columns: minmax(0, 1fr); }

@@ -209,3 +209,56 @@ fn manual_edits_reload_and_invalid_files_keep_the_last_valid_rules() {
     fs::remove_file(&initial.path).unwrap();
     assert_eq!(read().categories[0].category, "Source");
 }
+
+#[test]
+fn global_layout_reloads_from_json_and_preserves_category_rules() {
+    use diffest_core::DiffLayout;
+
+    let temp = tempfile::tempdir().unwrap();
+    let settings = CategorySettings::new(temp.path());
+    let initial = settings.read(None, &[]);
+    assert_eq!(initial.default_diff_layout, DiffLayout::Unified);
+    let path = initial.global.path;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"categoryRules":[{"glob":"*.txt","category":"Text"}]}"#,
+    )
+    .unwrap();
+
+    assert!(
+        settings
+            .save_default_diff_layout(
+                initial.global.version.as_deref().unwrap(),
+                DiffLayout::Split
+            )
+            .is_err()
+    );
+    let read = settings.read(None, &[]);
+    settings
+        .save_default_diff_layout(read.global.version.as_deref().unwrap(), DiffLayout::Split)
+        .unwrap();
+
+    let settings = CategorySettings::new(temp.path());
+    let reopened = settings.read(None, &["change.txt".into()]);
+    assert_eq!(reopened.default_diff_layout, DiffLayout::Split);
+    assert_eq!(reopened.categories[0].category, "Text");
+    settings
+        .save(None, reopened.global.version.as_deref().unwrap(), None)
+        .unwrap();
+    assert_eq!(
+        settings.read(None, &[]).default_diff_layout,
+        DiffLayout::Split
+    );
+
+    fs::write(&path, r#"{"defaultDiffLayout":"invalid"}"#).unwrap();
+    let invalid = settings.read(None, &[]);
+    assert_eq!(invalid.default_diff_layout, DiffLayout::Split);
+    assert!(invalid.global.error.unwrap().contains("defaultDiffLayout"));
+
+    fs::write(&path, "{}").unwrap();
+    assert_eq!(
+        settings.read(None, &[]).default_diff_layout,
+        DiffLayout::Unified
+    );
+}

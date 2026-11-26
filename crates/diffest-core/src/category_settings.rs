@@ -1,3 +1,4 @@
+use crate::DiffLayout;
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -13,6 +14,7 @@ use tempfile::NamedTempFile;
 
 const SETTINGS_PATH: &str = ".diffest/settings.json";
 const RULES_KEY: &str = "categoryRules";
+const LAYOUT_KEY: &str = "defaultDiffLayout";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +41,8 @@ pub struct RuleSettings {
 
 #[derive(Serialize)]
 pub struct Categorization {
+    #[serde(rename = "defaultDiffLayout")]
+    pub default_diff_layout: DiffLayout,
     pub global: RuleSettings,
     pub project: Option<RuleSettings>,
     pub categories: Vec<FileCategory>,
@@ -48,7 +52,13 @@ type CompiledRules = Vec<(CategoryRule, Pattern)>;
 
 pub struct CategorySettings {
     global_path: PathBuf,
-    last_valid: Mutex<HashMap<PathBuf, CompiledRules>>,
+    last_valid: Mutex<SettingsCache>,
+}
+
+#[derive(Default)]
+struct SettingsCache {
+    rules: HashMap<PathBuf, CompiledRules>,
+    default_layout: DiffLayout,
 }
 
 impl CategorySettings {
@@ -61,11 +71,15 @@ impl CategorySettings {
 
     pub fn read(&self, main_checkout: Option<&Path>, paths: &[String]) -> Categorization {
         let mut cache = self.last_valid.lock().unwrap();
-        let global = read_tier(&mut cache, self.global_path.clone());
+        let SettingsCache {
+            rules,
+            default_layout,
+        } = &mut *cache;
+        let global = read_tier(rules, self.global_path.clone(), Some(default_layout));
         let project =
-            main_checkout.map(|checkout| read_tier(&mut cache, checkout.join(SETTINGS_PATH)));
-        let global_rules = cache.get(&global.path).unwrap_or(&BUILT_INS);
-        let project_rules = project.as_ref().and_then(|tier| cache.get(&tier.path));
+            main_checkout.map(|checkout| read_tier(rules, checkout.join(SETTINGS_PATH), None));
+        let global_rules = rules.get(&global.path).unwrap_or(&BUILT_INS);
+        let project_rules = project.as_ref().and_then(|tier| rules.get(&tier.path));
         let rules = project_rules.unwrap_or(global_rules);
 
         let categories = paths
@@ -99,6 +113,7 @@ impl CategorySettings {
             ..tier
         });
         Categorization {
+            default_diff_layout: *default_layout,
             global,
             project,
             categories,
@@ -120,40 +135,81 @@ impl CategorySettings {
             .transpose()
             .map_err(|error| describe(&error))?;
         let mut cache = self.last_valid.lock().unwrap();
-        let contents = read_file(&path).map_err(|error| describe(&error))?;
-        if version(&contents) != expected_version {
-            return Err(describe(&"Settings changed on disk. Reload before saving."));
-        }
+        edit_settings(&path, expected_version, |json| {
+            if let Some(rules) = &compiled {
+                let rules = rules.iter().map(|(rule, _)| rule).collect::<Vec<_>>();
+                json.insert(RULES_KEY.into(), serde_json::to_value(rules)?);
+            } else {
+                json.remove(RULES_KEY);
+            }
+            Ok(())
+        })?;
+        cache_rules(&mut cache.rules, &path, compiled);
+        Ok(())
+    }
 
-        let mut json = read_object(contents.as_deref()).map_err(|error| describe(&error))?;
-        if let Some(rules) = &compiled {
-            let rules = rules.iter().map(|(rule, _)| rule).collect::<Vec<_>>();
-            json.insert(
-                RULES_KEY.into(),
-                serde_json::to_value(rules).map_err(|error| describe(&error))?,
-            );
-        } else {
-            json.remove(RULES_KEY);
-        }
-        let directory = path.parent().expect("settings path has a parent directory");
-        fs::create_dir_all(directory).map_err(|error| describe(&error))?;
-        let mut file = NamedTempFile::new_in(directory).map_err(|error| describe(&error))?;
-        serde_json::to_writer_pretty(&mut file, &json).map_err(|error| describe(&error))?;
-        file.write_all(b"\n").map_err(|error| describe(&error))?;
-        if read_file(&path).map_err(|error| describe(&error))? != contents {
-            return Err(describe(&"Settings changed on disk. Reload before saving."));
-        }
-        file.persist(&path).map_err(|error| describe(&error))?;
-        cache_rules(&mut cache, &path, compiled);
+    pub fn save_default_diff_layout(
+        &self,
+        expected_version: &str,
+        layout: DiffLayout,
+    ) -> Result<(), String> {
+        let mut cache = self.last_valid.lock().unwrap();
+        edit_settings(&self.global_path, expected_version, |json| {
+            json.insert(LAYOUT_KEY.into(), serde_json::to_value(layout)?);
+            Ok(())
+        })?;
+        cache.default_layout = layout;
         Ok(())
     }
 }
 
-fn read_tier(cache: &mut HashMap<PathBuf, CompiledRules>, path: PathBuf) -> RuleSettings {
+fn edit_settings(
+    path: &Path,
+    expected_version: &str,
+    edit: impl FnOnce(&mut Map<String, Value>) -> serde_json::Result<()>,
+) -> Result<(), String> {
+    let describe = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+    let contents = read_file(path).map_err(|error| describe(&error))?;
+    if version(&contents) != expected_version {
+        return Err(describe(&"Settings changed on disk. Reload before saving."));
+    }
+    let mut json = read_object(contents.as_deref()).map_err(|error| describe(&error))?;
+    edit(&mut json).map_err(|error| describe(&error))?;
+    let directory = path.parent().expect("settings path has a parent directory");
+    fs::create_dir_all(directory).map_err(|error| describe(&error))?;
+    let mut file = NamedTempFile::new_in(directory).map_err(|error| describe(&error))?;
+    serde_json::to_writer_pretty(&mut file, &json).map_err(|error| describe(&error))?;
+    file.write_all(b"\n").map_err(|error| describe(&error))?;
+    if read_file(path).map_err(|error| describe(&error))? != contents {
+        return Err(describe(&"Settings changed on disk. Reload before saving."));
+    }
+    file.persist(path).map_err(|error| describe(&error))?;
+    Ok(())
+}
+
+fn read_tier(
+    cache: &mut HashMap<PathBuf, CompiledRules>,
+    path: PathBuf,
+    default_layout: Option<&mut DiffLayout>,
+) -> RuleSettings {
     let contents = read_file(&path).map_err(|error| error.to_string());
     let version_on_disk = contents.as_ref().ok().map(version);
+    let mut layout_error = None;
     let rules = contents.and_then(|contents| {
         let mut json = read_object(contents.as_deref()).map_err(|error| error.to_string())?;
+        if let Some(default_layout) = default_layout {
+            match json
+                .remove(LAYOUT_KEY)
+                .map(serde_json::from_value)
+                .transpose()
+            {
+                Ok(layout) => *default_layout = layout.unwrap_or_default(),
+                Err(error) => {
+                    layout_error =
+                        Some(format!("{}: Invalid {LAYOUT_KEY}: {error}", path.display()))
+                }
+            }
+        }
         json.remove(RULES_KEY)
             .map(|value| {
                 let rules = serde_json::from_value(value)
@@ -173,7 +229,7 @@ fn read_tier(cache: &mut HashMap<PathBuf, CompiledRules>, path: PathBuf) -> Rule
         custom: cache.contains_key(&path),
         path,
         version: version_on_disk,
-        error,
+        error: error.or(layout_error),
         rules: Vec::new(),
     }
 }
