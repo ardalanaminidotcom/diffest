@@ -266,3 +266,22 @@ fn global_layout_reloads_from_json_and_preserves_category_rules() {
         DiffLayout::Unified
     );
 }
+
+#[test]
+fn settings_keep_previous_rules_when_a_glob_exceeds_the_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = CategorySettings::new(temp.path());
+    let paths = ["source.rs".to_string()];
+    let global = settings.read(None, &paths).global;
+    fs::create_dir_all(global.path.parent().unwrap()).unwrap();
+    fs::write(&global.path, r#"{"categoryRules":[{"glob":"*.rs","category":"Custom"}]}"#).unwrap();
+    assert_eq!(settings.read(None, &paths).categories[0].category, "Custom");
+
+    let oversized = serde_json::json!({
+        "categoryRules": [{"glob": "x".repeat(513), "category": "Oversized"}]
+    });
+    fs::write(&global.path, oversized.to_string()).unwrap();
+    let snapshot = settings.read(None, &paths);
+    assert_eq!(snapshot.categories[0].category, "Custom");
+    assert!(snapshot.global.error.unwrap().contains("exceeds 512 bytes"));
+}

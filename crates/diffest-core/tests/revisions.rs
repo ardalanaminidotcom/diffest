@@ -806,3 +806,42 @@ fn a_saved_comparison_keeps_distinct_committed_paths_with_the_same_lossy_spellin
         assert_eq!(details.after.unwrap().byte_size, Some(expected));
     }
 }
+
+#[test]
+fn oversized_file_patches_report_a_review_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    fs::write(main.join("large.txt"), "a normal text line
+".repeat(60_000)).unwrap();
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let error = app.open_worktree_review(&main).err().unwrap();
+    assert!(error.contains("review limit"), "{error}");
+
+    git(&main, &["add", "large.txt"]);
+    git(&main, &["commit", "-m", "Add large text file"]);
+    let error = app
+        .compare_revisions(&main, "HEAD^", "HEAD", ComparisonMode::Between)
+        .err()
+        .unwrap();
+    assert!(error.contains("review limit"), "{error}");
+}
+
+#[test]
+fn worktree_review_limits_the_combined_staged_and_untracked_diff() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    let content = "ordinary text line
+".repeat(46_000);
+    for index in 0..10 {
+        let path = format!("file-{index}.txt");
+        fs::write(main.join(&path), &content).unwrap();
+        if index < 5 {
+            git(&main, &["add", &path]);
+        }
+    }
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let error = app.open_worktree_review(&main).err().unwrap();
+    assert!(error.contains("diff is too large"), "{error}");
+}

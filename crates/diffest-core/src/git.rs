@@ -5,11 +5,18 @@ use std::{
     ffi::OsStr,
     fmt::Write as _,
     fs::{self, OpenOptions},
-    io,
+    io::{self, Read},
     iter::once,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread,
 };
+
+const GIT_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const DIFF_LIMIT: usize = 8 * 1024 * 1024;
+const PATCH_LIMIT: usize = 1024 * 1024;
+const DIFF_SIZE_ERROR: &str = "The diff is too large to display. Compare a smaller set of changes.";
+const PATCH_SIZE_ERROR: &str = "A file patch exceeds the 1 MiB review limit. Compare a smaller change.";
 
 const MISSING_MODE: &str = "000000";
 const REGULAR_MODE: &str = "100644";
@@ -63,17 +70,54 @@ fn git_with_index(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
+    let is_diff = args.starts_with(&["diff"]) || args.starts_with(&["--literal-pathspecs", "diff"]);
+    let limit = if is_diff { DIFF_LIMIT } else { GIT_OUTPUT_LIMIT };
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("Cannot run Git in {}: {error}", directory.display()))?;
-    if output.status.success()
-        || (args.starts_with(&["diff", "--no-index"]) && output.status.code() == Some(1))
+    let stdout = child.stdout.take().expect("Git stdout is piped");
+    let stderr = child.stderr.take().expect("Git stderr is piped");
+    let (status, stdout, stderr) = thread::scope(|scope| -> Result<_, String> {
+        let diagnostics = scope.spawn(move || -> io::Result<Vec<u8>> {
+            let mut stderr = stderr;
+            let mut message = Vec::new();
+            stderr.by_ref().take(8192).read_to_end(&mut message)?;
+            io::copy(&mut stderr, &mut io::sink())?;
+            Ok(message)
+        });
+        let mut output = Vec::new();
+        let result = stdout.take(limit as u64 + 1).read_to_end(&mut output);
+        if result.is_err() || output.len() > limit {
+            let _ = child.kill();
+        }
+        let status = child
+            .wait()
+            .map_err(|error| format!("Cannot wait for Git: {error}"))?;
+        if output.len() > limit {
+            let error = if is_diff {
+                DIFF_SIZE_ERROR
+            } else {
+                "Git output exceeds the 16 MiB limit."
+            };
+            return Err(error.into());
+        }
+        result.map_err(|error| format!("Cannot read Git output: {error}"))?;
+        let message = diagnostics
+            .join()
+            .expect("Git stderr reader")
+            .map_err(|error| format!("Cannot read Git diagnostics: {error}"))?;
+        Ok((status, output, message))
+    })?;
+    if status.success()
+        || (args.starts_with(&["diff", "--no-index"]) && status.code() == Some(1))
     {
-        Ok(output.stdout)
+        Ok(stdout)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8_lossy(&stderr);
         let detail = if stderr.trim().is_empty() {
-            output.status.to_string()
+            status.to_string()
         } else {
             stderr.trim().into()
         };
@@ -272,6 +316,11 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
     }
 
     let mut patches = Vec::new();
+    let mut remaining = DIFF_LIMIT;
+    let mut charge = |output: &[u8]| -> Result<(), String> {
+        remaining = remaining.checked_sub(output.len()).ok_or(DIFF_SIZE_ERROR)?;
+        Ok(())
+    };
     for (side, option) in [
         (PatchSide::Staged, "--cached"),
         (PatchSide::Unstaged, "--ours"),
@@ -287,6 +336,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         args.extend(PATCH_OPTIONS);
         args.push("--");
         let output = git(checkout, &args)?;
+        charge(&output)?;
         for raw in parse_patch(&output)? {
             if !conflicts.contains_key(raw.path) {
                 patches.push(raw.worktree_patch(side, None, true));
@@ -329,6 +379,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         args.extend(PATCH_OPTIONS);
         args.extend(["--", "/dev/null"]);
         let output = git_with_paths(checkout, &args, &[operand])?;
+        charge(&output)?;
         for raw in parse_patch(&output)? {
             patches.push(raw.worktree_patch(PatchSide::Unstaged, Some(path), trust_filemode));
         }
@@ -347,6 +398,10 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         args.extend(PATCH_OPTIONS);
         args.push("--");
         let output = git_with_paths(checkout, &args, &[os_path(path)?])?;
+        charge(&output)?;
+        if output.len() > PATCH_LIMIT {
+            return Err(PATCH_SIZE_ERROR.into());
+        }
         let mut patch = WorktreePatch {
             file: ChangedFile::new(
                 'U',
@@ -628,7 +683,11 @@ fn version(mode: &str, object_id: &str) -> Option<PatchVersion> {
 }
 
 fn parse_patch(output: &[u8]) -> Result<Vec<RawPatch<'_>>, String> {
-    parse_raw_patch(output).ok_or_else(|| "Unexpected output from Git diff".into())
+    let patches = parse_raw_patch(output).ok_or("Unexpected output from Git diff")?;
+    if patches.iter().any(|file| file.patch.len() > PATCH_LIMIT) {
+        return Err(PATCH_SIZE_ERROR.into());
+    }
+    Ok(patches)
 }
 
 fn parse_raw_patch(output: &[u8]) -> Option<Vec<RawPatch<'_>>> {

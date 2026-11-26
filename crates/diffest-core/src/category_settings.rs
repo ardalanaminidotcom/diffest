@@ -1,17 +1,18 @@
 use crate::DiffLayout;
-use glob::{MatchOptions, Pattern};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     collections::HashMap,
     fs,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
 };
 use tempfile::NamedTempFile;
 
+const SETTINGS_LIMIT: u64 = 256 * 1024;
 const SETTINGS_PATH: &str = ".diffest/settings.json";
 const RULES_KEY: &str = "categoryRules";
 const LAYOUT_KEY: &str = "defaultDiffLayout";
@@ -48,7 +49,7 @@ pub struct Categorization {
     pub categories: Vec<FileCategory>,
 }
 
-type CompiledRules = Vec<(CategoryRule, Pattern)>;
+type CompiledRules = Vec<(CategoryRule, GlobSet)>;
 
 pub struct CategorySettings {
     global_path: PathBuf,
@@ -85,13 +86,7 @@ impl CategorySettings {
         let categories = paths
             .iter()
             .map(|path| {
-                let options = MatchOptions {
-                    require_literal_separator: true,
-                    ..MatchOptions::new()
-                };
-                let rule = rules
-                    .iter()
-                    .find(|(_, pattern)| pattern.matches_with(path, options));
+                let rule = rules.iter().find(|(_, pattern)| pattern.is_match(path));
                 match rule {
                     Some((rule, _)) => FileCategory {
                         category: rule.category.clone(),
@@ -247,8 +242,18 @@ fn cache_rules(
 }
 
 fn read_file(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(contents) => Ok(Some(contents)),
+    match fs::File::open(path) {
+        Ok(file) => {
+            let mut contents = Vec::new();
+            file.take(SETTINGS_LIMIT + 1).read_to_end(&mut contents)?;
+            if contents.len() as u64 > SETTINGS_LIMIT {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Settings exceed 256 KiB",
+                ));
+            }
+            Ok(Some(contents))
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -267,6 +272,9 @@ fn read_object(contents: Option<&[u8]>) -> serde_json::Result<Map<String, Value>
 }
 
 fn compile(rules: Vec<CategoryRule>) -> Result<CompiledRules, String> {
+    if rules.len() > 256 {
+        return Err("Settings support up to 256 category rules".into());
+    }
     rules
         .into_iter()
         .enumerate()
@@ -289,9 +297,19 @@ fn compile(rules: Vec<CategoryRule>) -> Result<CompiledRules, String> {
             {
                 return Err(invalid("Glob must match a repository-relative path"));
             }
-            let pattern =
-                Pattern::new(&rule.glob).map_err(|error| format!("Rule {}: {error}", index + 1))?;
-            Ok((rule, pattern))
+            if rule.glob.len() > 512 {
+                return Err(invalid("Glob exceeds 512 bytes"));
+            }
+            let pattern = GlobBuilder::new(&rule.glob)
+                .literal_separator(true)
+                .backslash_escape(false)
+                .build()
+                .map_err(|error| format!("Rule {}: {error}", index + 1))?;
+            let matcher = GlobSetBuilder::new()
+                .add(pattern)
+                .build()
+                .map_err(|error| format!("Rule {}: {error}", index + 1))?;
+            Ok((rule, matcher))
         })
         .collect()
 }
