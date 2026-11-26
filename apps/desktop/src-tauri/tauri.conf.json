@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Diffest",
   "version": "0.0.0",
-  "identifier": "com.example.tauri-app",
+  "identifier": "app.diffest",
   "build": {
     "beforeDevCommand": "pnpm vite:dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "Diffest",
         "width": 800,
         "height": 600
       }

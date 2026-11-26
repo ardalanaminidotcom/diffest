@@ -1,14 +1,14 @@
 {
-  "name": "@typescript-monorepo-org/desktop-app-template",
+  "name": "diffest",
   "private": true,
   "version": "0.0.0",
-  "description": "desktop-app-template",
+  "description": "Diffest desktop application",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/typescript-monorepo-org/desktop-app-template.git"
+    "url": "git+https://github.com/ardalanaminidotcom/diffest.git"
   },
   "bugs": {
-    "url": "https://github.com/typescript-monorepo-org/desktop-app-template/issues"
+    "url": "https://github.com/ardalanaminidotcom/diffest/issues"
   },
   "scripts": {
     "typecheck": "tsrs --noEmit",

@@ -1,7 +1,7 @@
 {
-  "name": "tauri-app",
+  "name": "diffest-desktop",
   "version": "0.0.0",
-  "description": "",
+  "description": "Diffest desktop application",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -15,9 +15,6 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tauri": "tauri"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "2.12.5"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "3.0.11",

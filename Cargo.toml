@@ -9,5 +9,5 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
-[profile.release.package.tauri-app]
+[profile.release.package.diffest-desktop]
 opt-level = "z"
