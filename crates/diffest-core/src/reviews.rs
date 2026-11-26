@@ -26,7 +26,7 @@ pub(crate) const SCHEMA: &str = "
         PRIMARY KEY (review_id, file_index)
     );";
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitReviewSummary {
     pub id: i64,
@@ -42,6 +42,14 @@ pub struct CommitReviewSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CommitReview {
     pub comparison: Comparison,
+    pub summary: CommitReviewSummary,
+    pub reviewed_files: Vec<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitReviewProgress {
+    pub summary: CommitReviewSummary,
     pub reviewed_files: Vec<usize>,
 }
 
@@ -49,28 +57,45 @@ pub(crate) fn list(
     connection: &Connection,
     project_id: i64,
 ) -> Result<Vec<CommitReviewSummary>, String> {
-    let list = || {
-        let mut query = connection.prepare(
-            "SELECT r.id, r.base_label, r.target_label, r.start_commit, r.end_commit,
-                    COUNT(f.file_index), COUNT(*) FILTER (WHERE f.reviewed)
-             FROM commit_reviews r LEFT JOIN commit_review_files f ON f.review_id = r.id
-             WHERE r.project_id = ?1 GROUP BY r.id ORDER BY r.id DESC",
-        )?;
-        query
-            .query_map([project_id], |row| {
-                Ok(CommitReviewSummary {
-                    id: row.get(0)?,
-                    base_label: row.get(1)?,
-                    target_label: row.get(2)?,
-                    start: row.get(3)?,
-                    end: row.get(4)?,
-                    file_count: row.get(5)?,
-                    reviewed_count: row.get(6)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()
-    };
-    list().map_err(|error| format!("Cannot list saved reviews: {error}"))
+    summaries(connection, project_id, None)
+        .map_err(|error| format!("Cannot list saved reviews: {error}"))
+}
+
+fn summaries(
+    connection: &Connection,
+    project_id: i64,
+    review_id: Option<i64>,
+) -> rusqlite::Result<Vec<CommitReviewSummary>> {
+    let mut query = connection.prepare(
+        "SELECT r.id, r.base_label, r.target_label, r.start_commit, r.end_commit,
+                COUNT(f.file_index), COUNT(*) FILTER (WHERE f.reviewed)
+         FROM commit_reviews r LEFT JOIN commit_review_files f ON f.review_id = r.id
+         WHERE r.project_id = ?1 AND (?2 IS NULL OR r.id = ?2)
+         GROUP BY r.id ORDER BY r.id DESC",
+    )?;
+    query
+        .query_map(params![project_id, review_id], |row| {
+            Ok(CommitReviewSummary {
+                id: row.get(0)?,
+                base_label: row.get(1)?,
+                target_label: row.get(2)?,
+                start: row.get(3)?,
+                end: row.get(4)?,
+                file_count: row.get(5)?,
+                reviewed_count: row.get(6)?,
+            })
+        })?
+        .collect()
+}
+
+fn summary(
+    connection: &Connection,
+    project_id: i64,
+    id: i64,
+) -> rusqlite::Result<CommitReviewSummary> {
+    summaries(connection, project_id, Some(id))?
+        .pop()
+        .ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
 impl Application {
@@ -88,6 +113,16 @@ impl Application {
         comparison: &Comparison,
         layout: Option<DiffLayout>,
     ) -> Result<i64, String> {
+        self.save_commit_review_with_summary(checkout, comparison, layout)
+            .map(|summary| summary.id)
+    }
+
+    pub fn save_commit_review_with_summary(
+        &self,
+        checkout: &Path,
+        comparison: &Comparison,
+        layout: Option<DiffLayout>,
+    ) -> Result<CommitReviewSummary, String> {
         let mut connection = self.connect()?;
         let project = project_id(&connection, checkout)?;
         let mut save = || {
@@ -118,8 +153,8 @@ impl Application {
                     id,
                     index,
                     file.status as u32,
-                    file.path,
-                    file.previous_path,
+                    file.path_bytes(),
+                    file.previous_path_bytes(),
                     file.patch,
                 ])?;
             }
@@ -130,8 +165,9 @@ impl Application {
                     params![id, layout == DiffLayout::Split],
                 )?;
             }
+            let summary = summary(&transaction, project, id)?;
             transaction.commit()?;
-            Ok::<_, rusqlite::Error>(id)
+            Ok::<_, rusqlite::Error>(summary)
         };
         save().map_err(|error| format!("Cannot save commit review: {error}"))
     }
@@ -140,7 +176,8 @@ impl Application {
         let connection = self.connect()?;
         let project = project_id(&connection, checkout)?;
         let open = || {
-            let mut comparison = connection.query_row(
+            let transaction = connection.unchecked_transaction()?;
+            let mut comparison = transaction.query_row(
                 "SELECT base_label, target_label, divergence, base_commit, start_commit, end_commit
                  FROM commit_reviews WHERE id = ?1 AND project_id = ?2",
                 params![id, project],
@@ -160,20 +197,20 @@ impl Application {
                     })
                 },
             )?;
-            let mut query = connection.prepare(
-                "SELECT file_index, status, path, previous_path, patch, reviewed
+            let mut query = transaction.prepare(
+                "SELECT file_index, status, CAST(path AS BLOB), CAST(previous_path AS BLOB), patch, reviewed
                  FROM commit_review_files WHERE review_id = ?1 ORDER BY file_index",
             )?;
             let files = query.query_map([id], |row| {
                 Ok((
                     row.get::<_, usize>(0)?,
                     row.get::<_, bool>(5)?,
-                    ChangedFile {
-                        status: char::from_u32(row.get(1)?).unwrap_or(char::REPLACEMENT_CHARACTER),
-                        path: row.get(2)?,
-                        previous_path: row.get(3)?,
-                        patch: row.get(4)?,
-                    },
+                    ChangedFile::new(
+                        char::from_u32(row.get(1)?).unwrap_or(char::REPLACEMENT_CHARACTER),
+                        &row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?.as_deref(),
+                        row.get(4)?,
+                    ),
                 ))
             })?;
             let mut reviewed_files = Vec::new();
@@ -186,6 +223,7 @@ impl Application {
             }
             Ok::<_, rusqlite::Error>(CommitReview {
                 comparison,
+                summary: summary(&transaction, project, id)?,
                 reviewed_files,
             })
         };
@@ -199,6 +237,17 @@ impl Application {
         file_index: usize,
         reviewed: bool,
     ) -> Result<Vec<usize>, String> {
+        self.update_commit_file_review(checkout, id, file_index, reviewed)
+            .map(|progress| progress.reviewed_files)
+    }
+
+    pub fn update_commit_file_review(
+        &self,
+        checkout: &Path,
+        id: i64,
+        file_index: usize,
+        reviewed: bool,
+    ) -> Result<CommitReviewProgress, String> {
         let mut connection = self.connect()?;
         let project = project_id(&connection, checkout)?;
         let mut update = || {
@@ -221,8 +270,12 @@ impl Application {
                 .query_map([id], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             drop(query);
+            let summary = summary(&transaction, project, id)?;
             transaction.commit()?;
-            Ok(reviewed_files)
+            Ok(CommitReviewProgress {
+                summary,
+                reviewed_files,
+            })
         };
         update().map_err(|error| format!("Cannot update review mark: {error}"))
     }

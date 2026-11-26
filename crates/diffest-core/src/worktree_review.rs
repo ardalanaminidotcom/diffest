@@ -161,11 +161,10 @@ impl Application {
 impl WorktreePatch {
     fn matches_staged(&self, reviewed: &Self) -> bool {
         self.side == PatchSide::Staged
-            && self.file.path == reviewed.file.path
-            && self.file.previous_path == reviewed.file.previous_path
+            && self.file.path_bytes() == reviewed.file.path_bytes()
+            && self.file.previous_path_bytes() == reviewed.file.previous_path_bytes()
             && self.file.status == reviewed.file.status
             && self.before == reviewed.before
             && self.after == reviewed.after
-            && self.file.patch == reviewed.file.patch
     }
 }

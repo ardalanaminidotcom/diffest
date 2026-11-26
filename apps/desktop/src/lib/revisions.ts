@@ -8,7 +8,7 @@ interface Worktree {
 interface Project {
   id: number;
   name: string;
-  mainCheckout: string;
+  mainCheckout: string | null;
   worktrees: Worktree[];
   worktreeError: string | null;
   savedReviews: CommitReviewSummary[];
@@ -33,6 +33,8 @@ interface ChangedFile {
   status: string;
   path: string;
   previousPath: string | null;
+  pathBytes?: number[];
+  previousPathBytes?: number[];
   patch: string;
 }
 
@@ -67,9 +69,13 @@ interface CommitReviewSummary {
   reviewedCount: number;
 }
 
-interface CommitReview {
-  comparison: Comparison;
+interface CommitReviewProgress {
+  summary: CommitReviewSummary;
   reviewedFiles: number[];
+}
+
+interface CommitReview extends CommitReviewProgress {
+  comparison: Comparison;
 }
 
 type DiffLayout = "unified" | "split";
@@ -78,6 +84,8 @@ type ComparisonMode = "between" | "divergence";
 
 export type {
   CommitReview,
+  CommitReviewProgress,
+  CommitReviewSummary,
   Comparison,
   ComparisonMode,
   DiffLayout,

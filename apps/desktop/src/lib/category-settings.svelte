@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import CategoryRuleForm from "./category-rule-form.svelte";
 
 interface Properties {
-  mainCheckout: string | undefined;
+  mainCheckout: string | null;
   paths: string[];
   categories?: FileCategory[];
   defaultLayout?: DiffLayout;
@@ -14,16 +14,16 @@ interface Properties {
 
 let { mainCheckout, paths, categories = $bindable([]), defaultLayout = $bindable("unified") }: Properties = $props();
 let settings = $state<Categorization>();
-let loadedCheckout = $state<string>();
+let loadedCheckout = $state<string | null>(null);
 let error = $state("");
 let pendingRead = 0;
 let savingLayout = $state(false);
 
-async function load(checkout: string | undefined, filePaths: string[]): Promise<void> {
+async function load(checkout: string | null, filePaths: string[]): Promise<void> {
   const request = ++pendingRead;
   try {
     const response = await invoke<Categorization>("read_category_settings", {
-      mainCheckout: checkout ?? null,
+      mainCheckout: checkout,
       paths       : filePaths,
     });
     if (request !== pendingRead) return;

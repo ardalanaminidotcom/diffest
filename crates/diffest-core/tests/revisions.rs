@@ -164,6 +164,8 @@ fn git_paired_rename_compares_both_paths_and_detects_their_actual_formats() {
                 end: comparison.end,
                 path: file.path,
                 previous_path: file.previous_path,
+                path_bytes: file.path_bytes,
+                previous_path_bytes: file.previous_path_bytes,
                 status: file.status,
             },
         )
@@ -273,7 +275,7 @@ fn ongoing_review_tracks_each_patch_in_its_worktree_and_preserves_only_current_m
 fn conflicts_and_binary_changes_remain_reviewable_and_lose_marks_when_edited() {
     let temp = tempfile::tempdir().unwrap();
     let main = init_project(temp.path());
-    fs::write(main.join("conflict.txt"), "base\n").unwrap();
+    fs::write(main.join("conflict.txt"), "original\n").unwrap();
     git(&main, &["add", "."]);
     git(&main, &["commit", "-m", "Initial commit"]);
     git(&main, &["switch", "-c", "topic"]);
@@ -301,6 +303,15 @@ fn conflicts_and_binary_changes_remain_reviewable_and_lose_marks_when_edited() {
     assert_eq!(conflict.file.path, "conflict.txt");
     assert_eq!(conflict.file.status, 'U');
     assert!(conflict.file.patch.contains("<<<<<<< HEAD"));
+    let details = app
+        .file_details(
+            &main,
+            FileDetailsSource::Worktree {
+                fingerprint: conflict.fingerprint.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(details.before.unwrap().byte_size, Some(5));
     for patch in &patches {
         app.set_worktree_patch_reviewed(&main, &patch.fingerprint, true)
             .unwrap();
@@ -337,7 +348,10 @@ fn adding_a_linked_checkout_selects_it_and_registers_one_project_across_restarts
 
     let registered = app.register_project(&linked).unwrap();
     assert_eq!(registered.checkout, linked);
-    assert_eq!(registered.project.main_checkout, main);
+    assert_eq!(
+        registered.project.main_checkout.as_deref(),
+        Some(main.as_path())
+    );
     assert_eq!(registered.project.worktrees.len(), 2);
 
     let registered_again = app.register_project(&main).unwrap();
@@ -372,14 +386,50 @@ fn reopening_a_project_with_separate_git_metadata_uses_its_registered_checkout()
     let database = temp.path().join("diffest.sqlite3");
     let app = Application::new(database.clone());
 
+    let first = app.register_project(&linked).unwrap();
+    assert!(first.project.main_checkout.is_none());
+    assert_eq!(first.project.worktrees.len(), 1);
+    assert_eq!(first.project.worktrees[0].path, linked);
+    assert!(first.project.worktree_error.is_some());
+    assert!(app.list_projects().unwrap()[0].main_checkout.is_none());
+
     let registration = app.register_project(&main).unwrap();
+    assert_eq!(registration.project.id, first.project.id);
     assert_eq!(registration.project.worktrees[0].path, main);
+    assert!(registration.project.worktree_error.is_none());
     let sibling = app.register_project(&linked).unwrap();
     assert_eq!(sibling.project.id, registration.project.id);
     assert_eq!(sibling.project.worktrees[0].path, main);
     assert_eq!(sibling.project.worktrees[1].path, linked);
     let reopened = Application::new(database).list_projects().unwrap();
     assert_eq!(reopened[0].worktrees[0].path, main);
+}
+
+#[test]
+fn linked_checkout_registration_recovers_the_main_checkout_from_git_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = temp.path().join("main checkout");
+    fs::create_dir(&main).unwrap();
+    let main = main.canonicalize().unwrap();
+    git(
+        &main,
+        &["init", "-b", "main", "--separate-git-dir", "../git-storage"],
+    );
+    git(&main, &["config", "core.worktree", "../main checkout"]);
+    configure_user(&main);
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    git(&main, &["worktree", "add", "-b", "topic", "../linked"]);
+    let linked = temp.path().join("linked").canonicalize().unwrap();
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    let registration = app.register_project(&linked).unwrap();
+    assert_eq!(
+        registration.project.main_checkout.as_deref(),
+        Some(main.as_path())
+    );
+    assert_eq!(registration.project.worktrees[0].path, main);
+    assert_eq!(registration.project.worktrees[1].path, linked);
+    assert!(registration.project.worktree_error.is_none());
 }
 
 #[test]
@@ -567,15 +617,16 @@ fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves()
         comparison.files[1].patch
     );
     assert_eq!(reopened.reviewed_files, [0]);
+    assert_eq!(&reopened.summary, summary);
 
-    assert_eq!(
-        app.set_commit_file_reviewed(&linked, saved, 1, true)
-            .unwrap(),
-        [0, 1]
-    );
+    let updated = app
+        .update_commit_file_review(&linked, saved, 1, true)
+        .unwrap();
+    assert_eq!(updated.reviewed_files, [0, 1]);
     let projects = app.list_projects().unwrap();
     let completed = &projects[0].saved_reviews[0];
     assert_eq!(completed.reviewed_count, completed.file_count);
+    assert_eq!(&updated.summary, completed);
 
     assert!(
         app.set_commit_file_reviewed(&linked, saved, 2, true)
@@ -661,4 +712,97 @@ fn layout_overrides_reopen_with_their_saved_review_or_worktree() {
         app.set_review_layout(&linked, Some(999), DiffLayout::Split)
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_review_stages_the_selected_byte_path_and_reads_its_details() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    let invalid = main.join(OsStr::from_bytes(b"note-\xff.txt"));
+    fs::write(&invalid, "invalid name\n").unwrap();
+    fs::write(main.join("note-�.txt"), "valid name\n").unwrap();
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    let patches = app.open_worktree_review(&main).unwrap();
+    assert_eq!(patches.len(), 2);
+    let patch = patches
+        .iter()
+        .find(|patch| patch.file.patch.contains("+invalid name\n"))
+        .unwrap();
+    assert_eq!(patch.file.path, r"note-\xff.txt");
+    let details = app
+        .file_details(
+            &main,
+            FileDetailsSource::Worktree {
+                fingerprint: patch.fingerprint.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(details.after.unwrap().byte_size, Some(13));
+
+    app.set_worktree_patch_reviewed(&main, &patch.fingerprint, true)
+        .unwrap();
+    let result = app.stage_worktree_patch(&main, &patch.fingerprint).unwrap();
+    assert_eq!(result.error, None);
+    assert!(
+        result
+            .patches
+            .iter()
+            .any(|patch| patch.side == PatchSide::Staged
+                && patch.reviewed
+                && patch.file.patch.contains("+invalid name\n"))
+    );
+    assert!(
+        result
+            .patches
+            .iter()
+            .any(|patch| patch.side == PatchSide::Unstaged
+                && !patch.reviewed
+                && patch.file.patch.contains("+valid name\n"))
+    );
+    assert_eq!(git(&main, &["ls-files"]), r#""note-\377.txt""#);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_saved_comparison_keeps_distinct_committed_paths_with_the_same_lossy_spelling() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let main = init_project(temp.path());
+    git(&main, &["commit", "--allow-empty", "-m", "Initial"]);
+    fs::write(
+        main.join(OsStr::from_bytes(b"note-\xff.txt")),
+        "invalid name\n",
+    )
+    .unwrap();
+    fs::write(main.join("note-�.txt"), "valid name\n").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-m", "Add both files"]);
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    app.register_project(&main).unwrap();
+    let comparison = app
+        .compare_revisions(&main, "HEAD^", "HEAD", ComparisonMode::Between)
+        .unwrap();
+    let id = app.save_commit_review(&main, &comparison).unwrap();
+    let saved = app.open_commit_review(&main, id).unwrap().comparison;
+    assert_eq!(saved.files.len(), 2);
+    for file in &saved.files {
+        let mut request = serde_json::to_value(file).unwrap();
+        request["kind"] = "comparison".into();
+        request["start"] = saved.start.clone().into();
+        request["end"] = saved.end.clone().into();
+        let source = serde_json::from_value(request).unwrap();
+        let details = app.file_details(&main, source).unwrap();
+        let expected = if file.patch.contains("+invalid name\n") {
+            13
+        } else {
+            11
+        };
+        assert_eq!(details.after.unwrap().byte_size, Some(expected));
+    }
 }

@@ -2,6 +2,8 @@
 import type { FileCategory } from "../lib/category-settings.js";
 import type {
   CommitReview,
+  CommitReviewProgress,
+  CommitReviewSummary,
   Comparison,
   ComparisonMode,
   DiffLayout,
@@ -27,7 +29,18 @@ const statusLabels: Record<string, string> = {
   U: "Conflicted",
 };
 
-type ReviewProgress = Pick<CommitReview, "reviewedFiles"> & { id: number; };
+/* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
+type OpenReview
+  = | {
+    kind: "comparison";
+    comparison: Comparison;
+    progress: CommitReviewProgress | null;
+  }
+  | {
+    kind: "worktree";
+    patches: WorktreePatch[];
+  };
+/* eslint-enable @stylistic/key-spacing */
 
 let projects = $state<Project[]>([]);
 let checkout = $state("");
@@ -37,9 +50,10 @@ let revisions = $state<Revisions>();
 let base = $state("");
 let target = $state("HEAD");
 let mode = $state<ComparisonMode>("between");
-let comparison = $state<Comparison | null>(null);
-let review = $state<ReviewProgress | null>(null);
-let worktreeReview = $state<WorktreePatch[] | null>(null);
+let openReviewState = $state<OpenReview | null>(null);
+let comparison = $derived(openReviewState?.kind === "comparison" ? openReviewState.comparison : null);
+let review = $derived(openReviewState?.kind === "comparison" ? openReviewState.progress : null);
+let worktreeReview = $derived(openReviewState?.kind === "worktree" ? openReviewState.patches : null);
 let reviewedFiles = $derived(new Set(review?.reviewedFiles));
 let defaultLayout = $state<DiffLayout>("unified");
 let layoutOverride = $state<DiffLayout | null>(null);
@@ -48,7 +62,7 @@ let selectedIndex = $state(0);
 let files = $derived(worktreeReview ?? comparison?.files ?? []);
 let selectedFile = $derived(files[selectedIndex]);
 let selectedWorktreePatch = $derived(worktreeReview?.[selectedIndex]);
-let mainCheckout = $derived(projects.find(project => project.id === activeProjectId)?.mainCheckout);
+let mainCheckout = $derived(projects.find(project => project.id === activeProjectId)?.mainCheckout ?? null);
 let paths = $derived(files.map(file => file.path));
 let categories = $state<FileCategory[]>([]);
 let error = $state("");
@@ -89,9 +103,12 @@ async function openWorktree(path: string, projectId: number, ongoing = worktreeR
   base = "";
   target = "HEAD";
   mode = "between";
-  comparison = null;
-  review = null;
-  worktreeReview = patches;
+  openReviewState = patches
+    ? {
+        kind: "worktree",
+        patches,
+      }
+    : null;
   selectedIndex = 0;
 }
 
@@ -110,14 +127,17 @@ function addProject(event: SubmitEvent): void {
 function compare(event: SubmitEvent): void {
   event.preventDefault();
   void run(async () => {
-    comparison = await invoke<Comparison>("compare_revisions", {
+    const displayed = await invoke<Comparison>("compare_revisions", {
       checkout: activeCheckout,
       base    : base.trim(),
       target  : target.trim(),
       mode,
     });
-    review = null;
-    worktreeReview = null;
+    openReviewState = {
+      kind      : "comparison",
+      comparison: displayed,
+      progress  : null,
+    };
     layoutOverride = null;
     selectedIndex = 0;
   });
@@ -127,26 +147,19 @@ function reviewStatus(fileCount: number, reviewedCount: number): string {
   return fileCount === reviewedCount ? "Reviewed" : `${ reviewedCount } of ${ fileCount } reviewed`;
 }
 
-function updateReview(id: number, displayed: Comparison, marks: number[]): void {
-  review = {
-    id,
-    reviewedFiles: marks,
+function updateReview(displayed: Comparison, progress: CommitReviewProgress): void {
+  openReviewState = {
+    kind      : "comparison",
+    comparison: displayed,
+    progress,
   };
-  const summary = {
-    id,
-    baseLabel    : displayed.baseLabel,
-    targetLabel  : displayed.targetLabel,
-    start        : displayed.start,
-    end          : displayed.end,
-    fileCount    : displayed.files.length,
-    reviewedCount: marks.length,
-  };
+  const { summary } = progress;
   projects = projects.map((project) => {
     if (project.id !== activeProjectId) return project;
 
     return {
       ...project,
-      savedReviews: [...project.savedReviews.filter(item => item.id !== id), summary]
+      savedReviews: [...project.savedReviews.filter(item => item.id !== summary.id), summary]
         .toSorted((first, second) => second.id - first.id),
     };
   });
@@ -154,12 +167,15 @@ function updateReview(id: number, displayed: Comparison, marks: number[]): void 
 
 function saveReview(displayed: Comparison): void {
   void run(async () => {
-    const id = await invoke<number>("save_commit_review", {
+    const summary = await invoke<CommitReviewSummary>("save_commit_review", {
       checkout  : activeCheckout,
       comparison: displayed,
       layout    : layoutOverride,
     });
-    updateReview(id, displayed, []);
+    updateReview(displayed, {
+      summary,
+      reviewedFiles: [],
+    });
   });
 }
 
@@ -175,35 +191,42 @@ function openReview(project: Project, id: number): void {
       id,
     });
     layoutOverride = await readReviewLayout(path, id);
-    comparison = saved.comparison;
-    base = comparison.baseLabel;
-    target = comparison.targetLabel;
-    mode = comparison.mode;
-    worktreeReview = null;
+    const { comparison: displayed, summary, reviewedFiles: marks } = saved;
+    base = displayed.baseLabel;
+    target = displayed.targetLabel;
+    mode = displayed.mode;
     selectedIndex = 0;
-    updateReview(id, comparison, saved.reviewedFiles);
+    updateReview(displayed, {
+      summary,
+      reviewedFiles: marks,
+    });
   });
 }
 
 function markFile(id: number, displayed: Comparison, fileIndex: number): void {
   void run(async () => {
-    const marks = await invoke<number[]>("set_commit_file_reviewed", {
+    const progress = await invoke<CommitReviewProgress>("set_commit_file_reviewed", {
       checkout: activeCheckout,
       id,
       fileIndex,
       reviewed: !reviewedFiles.has(fileIndex),
     });
-    updateReview(id, displayed, marks);
+    updateReview(displayed, progress);
   });
 }
 
 function showWorktreeReview(patches: WorktreePatch[], side = selectedWorktreePatch?.side): void {
-  const path = selectedWorktreePatch?.path;
-  const index = patches.findIndex(patch => patch.side === side && patch.path === path);
+  const selected = selectedWorktreePatch;
+  const pathBytes = selected?.pathBytes?.join(",");
+  const index = patches.findIndex((patch) => {
+    const samePath = patch.path === selected?.path && patch.pathBytes?.join(",") === pathBytes;
+    return patch.side === side && samePath;
+  });
   selectedIndex = Math.max(0, index);
-  worktreeReview = patches;
-  comparison = null;
-  review = null;
+  openReviewState = {
+    kind: "worktree",
+    patches,
+  };
 }
 
 function refreshWorktreeReview(): void {
@@ -221,7 +244,7 @@ function switchLayout(next: DiffLayout): void {
     if (review || worktreeReview) {
       await invoke("set_review_layout", {
         checkout: activeCheckout,
-        id      : review?.id ?? null,
+        id      : review?.summary.id ?? null,
         layout  : next,
       });
     }
@@ -265,7 +288,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 
     {#each projects as project (project.id)}
       <section aria-label={project.name}>
-        <h2 title={project.mainCheckout}>{project.name}</h2>
+        <h2 title={project.mainCheckout ?? project.name}>{project.name}</h2>
         {#if project.worktreeError}
           <p>{project.worktreeError}</p>
         {/if}
@@ -291,7 +314,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
                 <li>
                   <button
                     type="button"
-                    aria-pressed={review?.id === saved.id}
+                    aria-pressed={review?.summary.id === saved.id}
                     onclick={() => openReview(project, saved.id)}
                     disabled={busy || !project.worktrees.length}>
                     {saved.baseLabel} → {saved.targetLabel}
@@ -359,7 +382,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
           <dt>Effective end</dt><dd><code>{comparison.end}</code></dd>
         </dl>
         {#if review}
-          <p id="review-progress" role="status">{reviewStatus(comparison.files.length, review.reviewedFiles.length)}</p>
+          <p id="review-progress" role="status">{reviewStatus(review.summary.fileCount, review.summary.reviewedCount)}</p>
         {:else}
           <button id="save-review" type="button" onclick={() => saveReview(displayed)} disabled={busy}>Save review</button>
         {/if}
@@ -406,7 +429,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
                 <button
                   id="review-file"
                   type="button"
-                  onclick={() => markFile(current.id, displayed, selectedIndex)}
+                  onclick={() => markFile(current.summary.id, displayed, selectedIndex)}
                   disabled={busy}>
                   {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
                 </button>
@@ -420,6 +443,8 @@ function stageWorktreePatch(patch: WorktreePatch): void {
                   end: comparison.end,
                   path: selectedFile.path,
                   previousPath: selectedFile.previousPath,
+                  pathBytes: selectedFile.pathBytes,
+                  previousPathBytes: selectedFile.previousPathBytes,
                   status: selectedFile.status,
                 }} />
               {/if}

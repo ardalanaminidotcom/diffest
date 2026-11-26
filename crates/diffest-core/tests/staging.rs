@@ -243,3 +243,57 @@ fi
             && !patch.reviewed
     }));
 }
+
+#[cfg(unix)]
+#[test]
+fn new_executable_uses_the_mode_git_will_stage_when_filemode_is_disabled() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = temp.path().join("project");
+    init(&checkout);
+    git(&checkout, &["config", "core.filemode", "false"]);
+    let file = checkout.join("script");
+    fs::write(&file, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let app = Application::new(temp.path().join("review.sqlite3"));
+    let patches = app.open_worktree_review(&checkout).unwrap();
+    assert!(patches[0].file.patch.contains("new file mode 100644\n"));
+    let reviewed = mark_unstaged(&app, &checkout, "script");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(app.open_worktree_review(&checkout).unwrap()[0].reviewed);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = app.stage_worktree_patch(&checkout, &reviewed).unwrap();
+    assert_eq!(result.error, None);
+    assert!(result.patches[0].reviewed);
+    assert!(git(&checkout, &["ls-files", "--stage", "script"]).starts_with("100644 "));
+}
+
+#[test]
+fn staging_preserves_marks_when_git_changes_the_displayed_path_prefixes() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = temp.path().join("project");
+    init(&checkout);
+    git(&checkout, &["config", "diff.mnemonicPrefix", "true"]);
+    fs::write(checkout.join("tracked"), "committed\n").unwrap();
+    git(&checkout, &["add", "tracked"]);
+    git(&checkout, &["commit", "-m", "Initial"]);
+    fs::write(checkout.join("tracked"), "updated\n").unwrap();
+    fs::write(checkout.join("-"), "new\n").unwrap();
+
+    let app = Application::new(temp.path().join("review.sqlite3"));
+    for (path, content) in [("tracked", "updated\n"), ("-", "new\n")] {
+        let reviewed = mark_unstaged(&app, &checkout, path);
+        let result = app.stage_worktree_patch(&checkout, &reviewed).unwrap();
+        assert_eq!(result.error, None);
+        assert_eq!(git(&checkout, &["show", &format!(":{path}")]), content);
+        let staged = result
+            .patches
+            .iter()
+            .find(|patch| patch.file.path == path)
+            .unwrap();
+        assert_eq!(staged.side, PatchSide::Staged);
+        assert!(staged.reviewed, "{path}");
+    }
+}

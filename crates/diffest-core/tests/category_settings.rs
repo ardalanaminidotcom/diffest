@@ -56,7 +56,11 @@ fn changed_files_use_first_matching_glob_and_choose_the_rename_destination() {
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
     let settings = CategorySettings::new(&temp.path().join("home"));
-    let project_settings = project.main_checkout.join(".diffest/settings.json");
+    let project_settings = project
+        .main_checkout
+        .as_deref()
+        .unwrap()
+        .join(".diffest/settings.json");
     fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
     fs::write(
         &project_settings,
@@ -64,7 +68,7 @@ fn changed_files_use_first_matching_glob_and_choose_the_rename_destination() {
     )
     .unwrap();
     let categories = settings
-        .read(Some(&project.main_checkout), &paths)
+        .read(project.main_checkout.as_deref(), &paths)
         .categories;
     for (file, category) in files.iter().zip(&categories) {
         match file.status {
@@ -89,7 +93,7 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
     let linked = temp.path().join("linked");
     let app = Application::new(temp.path().join("diffest.sqlite3"));
     let project = app.register_project(&linked).unwrap().project;
-    assert_eq!(project.main_checkout, main);
+    assert_eq!(project.main_checkout.as_deref(), Some(main.as_path()));
 
     let settings = CategorySettings::new(&temp.path().join("home"));
     let paths = [
@@ -100,7 +104,7 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
         "data.csv",
     ]
     .map(str::to_owned);
-    let read = || settings.read(Some(&project.main_checkout), &paths);
+    let read = || settings.read(project.main_checkout.as_deref(), &paths);
     let categories = |snapshot: diffest_core::category_settings::Categorization| {
         snapshot
             .categories

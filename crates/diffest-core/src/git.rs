@@ -2,12 +2,20 @@ use crate::{ChangedFile, Commit, PatchSide, PatchVersion, Revisions, Worktree, W
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
+    fmt::Write as _,
     fs::{self, OpenOptions},
     io,
     iter::once,
     path::{Path, PathBuf},
     process::Command,
 };
+
+const MISSING_MODE: &str = "000000";
+const REGULAR_MODE: &str = "100644";
+const EXECUTABLE_MODE: &str = "100755";
+pub(crate) const SYMLINK_MODE: &str = "120000";
+pub(crate) const GITLINK_MODE: &str = "160000";
 
 const PATCH_OPTIONS: &[&str] = &[
     "--color=never",
@@ -19,12 +27,21 @@ const PATCH_OPTIONS: &[&str] = &[
 ];
 
 pub(crate) fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    git_with_index(directory, args, None)
+    git_with_paths(directory, args, &[])
+}
+
+pub(crate) fn git_with_paths(
+    directory: &Path,
+    args: &[&str],
+    paths: &[&OsStr],
+) -> Result<Vec<u8>, String> {
+    git_with_index(directory, args, paths, None)
 }
 
 fn git_with_index(
     directory: &Path,
     args: &[&str],
+    paths: &[&OsStr],
     index: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
@@ -35,7 +52,8 @@ fn git_with_index(
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(args);
+        .args(args)
+        .args(paths);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
@@ -86,7 +104,7 @@ pub(crate) fn worktree_directory(checkout: &Path) -> Result<PathBuf, String> {
 pub(crate) fn worktrees(
     common_directory: &Path,
     main_hint: &Path,
-) -> Result<(PathBuf, Vec<Worktree>), String> {
+) -> Result<(Option<PathBuf>, Vec<Worktree>), String> {
     let output = git(
         common_directory,
         &["--git-dir=.", "worktree", "list", "--porcelain", "-z"],
@@ -94,7 +112,14 @@ pub(crate) fn worktrees(
     let output = std::str::from_utf8(&output).map_err(|_| "Git checkout paths must be UTF-8")?;
     let mut main_checkout = None;
     let mut worktrees = Vec::new();
-    for record in output.split("\0\0").filter(|record| !record.is_empty()) {
+    let mut records = output
+        .split("\0\0")
+        .filter(|record| !record.is_empty())
+        .peekable();
+    if records.peek().is_none() {
+        return Err("Git returned no worktrees for the project".into());
+    }
+    for (index, record) in records.enumerate() {
         let mut fields = record.split('\0');
         let Some(path) = fields
             .next()
@@ -115,24 +140,41 @@ pub(crate) fn worktrees(
                 available = false;
             }
         }
-        if main_checkout.is_none() && path == common_directory && available {
-            // With separate Git metadata, Git lists the metadata directory as the main worktree.
-            if main_hint != common_directory
-                && resolve_path(main_hint, "--absolute-git-dir")
-                    .is_ok_and(|directory| directory == common_directory)
-            {
-                path = main_hint.to_path_buf();
-            } else {
-                available = false;
-            }
+        if index == 0 && available {
+            // Git can report the metadata directory instead of a separate main checkout.
+            let Some(checkout) = main_worktree(common_directory, &path, main_hint) else {
+                continue;
+            };
+            main_checkout = Some(checkout.clone());
+            path = checkout;
         }
-        main_checkout.get_or_insert_with(|| path.clone());
         if available {
             worktrees.push(Worktree { path, branch });
         }
     }
-    let main_checkout = main_checkout.ok_or("Git returned no worktrees for the project")?;
     Ok((main_checkout, worktrees))
+}
+
+fn main_worktree(common_directory: &Path, reported: &Path, main_hint: &Path) -> Option<PathBuf> {
+    let verify = |candidate: &Path| {
+        let root = checkout_root(candidate).ok()?;
+        (root != common_directory && worktree_directory(&root).ok()?.as_path() == common_directory)
+            .then_some(root)
+    };
+    for candidate in [reported, main_hint] {
+        if candidate != common_directory
+            && let Some(checkout) = verify(candidate)
+        {
+            return Some(checkout);
+        }
+    }
+    let configured = git(
+        common_directory,
+        &["--git-dir=.", "config", "--path", "--get", "core.worktree"],
+    )
+    .ok()?;
+    let path = os_path(configured.strip_suffix(b"\n").unwrap_or(&configured)).ok()?;
+    verify(&common_directory.join(path))
 }
 
 pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
@@ -247,7 +289,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         let output = git(checkout, &args)?;
         for raw in parse_patch(&output)? {
             if !conflicts.contains_key(raw.path) {
-                patches.push(raw.worktree_patch(side, None)?);
+                patches.push(raw.worktree_patch(side, None, true));
             }
         }
     }
@@ -256,6 +298,17 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         checkout,
         &["ls-files", "--others", "--exclude-standard", "-z"],
     )?;
+    let trust_filemode = untracked.is_empty()
+        || git(
+            checkout,
+            &[
+                "config",
+                "--bool",
+                "--default=true",
+                "--get",
+                "core.filemode",
+            ],
+        )? != b"false\n";
     for path in untracked
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
@@ -264,8 +317,7 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
             // An untracked nested repository is reported as a directory by ls-files.
             continue;
         }
-        let path = worktree_path(path)?;
-        let operand = if path == "-" { "./-" } else { path };
+        let operand = os_path(if path == b"-" { b"./-" } else { path })?;
         let mut args = vec![
             "diff",
             "--no-index",
@@ -275,22 +327,15 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
             "--abbrev=64",
         ];
         args.extend(PATCH_OPTIONS);
-        args.extend(["--", "/dev/null", operand]);
-        let output = git(checkout, &args)?;
+        args.extend(["--", "/dev/null"]);
+        let output = git_with_paths(checkout, &args, &[operand])?;
         for raw in parse_patch(&output)? {
-            patches.push(raw.worktree_patch(PatchSide::Unstaged, Some(path))?);
+            patches.push(raw.worktree_patch(PatchSide::Unstaged, Some(path), trust_filemode));
         }
     }
 
     for (path, stages) in conflicts {
-        let path = worktree_path(path)?;
-        let stage = if stages.iter().any(|stage| stage.ends_with(b" 2")) {
-            "--ours"
-        } else if stages.iter().any(|stage| stage.ends_with(b" 3")) {
-            "--theirs"
-        } else {
-            "--base"
-        };
+        let (stage, before) = conflict_version(&stages)?;
         let mut args = vec![
             "--literal-pathspecs",
             "diff",
@@ -300,22 +345,22 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
             "--full-index",
         ];
         args.extend(PATCH_OPTIONS);
-        args.extend(["--", path]);
-        let output = git(checkout, &args)?;
+        args.push("--");
+        let output = git_with_paths(checkout, &args, &[os_path(path)?])?;
         let mut patch = WorktreePatch {
-            file: ChangedFile {
-                status: 'U',
-                path: path.into(),
-                previous_path: None,
-                patch: if output.is_empty() {
+            file: ChangedFile::new(
+                'U',
+                path,
+                None,
+                if output.is_empty() {
                     "Unmerged path".into()
                 } else {
                     String::from_utf8_lossy(&output).into()
                 },
-            },
+            ),
             side: PatchSide::Unstaged,
             fingerprint: String::new(),
-            before: None,
+            before: Some(before),
             after: None,
             reviewed: false,
         };
@@ -323,6 +368,23 @@ pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>,
         patches.push(patch);
     }
     Ok(patches)
+}
+
+fn conflict_version(stages: &[&[u8]]) -> Result<(&'static str, PatchVersion), String> {
+    for (number, option) in [("2", "--ours"), ("3", "--theirs"), ("1", "--base")] {
+        for header in stages {
+            let header = std::str::from_utf8(header).map_err(|_| "Invalid Git index stage")?;
+            let mut fields = header.split_whitespace();
+            if let (Some(mode), Some(object_id), Some(stage)) =
+                (fields.next(), fields.next(), fields.next())
+                && stage == number
+                && let Some(version) = version(mode, object_id)
+            {
+                return Ok((option, version));
+            }
+        }
+    }
+    Err("Git returned no usable conflict stage".into())
 }
 
 pub(crate) fn stage_reviewed_patch(
@@ -352,7 +414,7 @@ pub(crate) fn stage_reviewed_patch(
     if patch
         .after
         .as_ref()
-        .is_some_and(|version| version.mode == "160000")
+        .is_some_and(|version| version.mode == GITLINK_MODE)
         && patch
             .file
             .patch
@@ -377,26 +439,34 @@ pub(crate) fn stage_reviewed_patch(
 
     let list = ["ls-files", "--stage", "-z"];
     let original = git(checkout, &list)?;
-    let path = patch.file.path.as_str();
-    let previous = patch.file.previous_path.as_deref();
-    let mut args = vec!["--literal-pathspecs", "add", "--all", "--", path];
-    args.extend(previous);
-    git_with_index(checkout, &args, Some(&candidate))?;
+    let path = patch.file.path_bytes();
+    let previous = patch.file.previous_path_bytes();
+    let paths = once(path)
+        .chain(previous)
+        .map(os_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    git_with_index(
+        checkout,
+        &["--literal-pathspecs", "add", "--all", "--"],
+        &paths,
+        Some(&candidate),
+    )?;
 
     let mut expected: Vec<_> = index_records(&original)
         .filter(|record| {
             let recorded_path = record.splitn(2, |byte| *byte == b'\t').nth(1);
-            recorded_path != Some(path.as_bytes()) && recorded_path != previous.map(str::as_bytes)
+            recorded_path != Some(path) && recorded_path != previous
         })
         .collect();
-    let after = patch
-        .after
-        .as_ref()
-        .map(|version| format!("{} {} 0\t{path}", version.mode, version.object_id));
-    expected.extend(after.as_deref().map(str::as_bytes));
+    let after = patch.after.as_ref().map(|version| {
+        let mut record = format!("{} {} 0\t", version.mode, version.object_id).into_bytes();
+        record.extend_from_slice(path);
+        record
+    });
+    expected.extend(after.as_deref());
     expected.sort_unstable();
 
-    let staged = git_with_index(checkout, &list, Some(&candidate))?;
+    let staged = git_with_index(checkout, &list, &[], Some(&candidate))?;
     let mut actual: Vec<_> = index_records(&staged).collect();
     actual.sort_unstable();
     if actual != expected {
@@ -414,22 +484,46 @@ fn index_records(list: &[u8]) -> impl Iterator<Item = &[u8]> {
         .filter(|record| !record.is_empty())
 }
 
-fn worktree_path(path: &[u8]) -> Result<&str, String> {
-    std::str::from_utf8(path).map_err(|_| "Git worktree paths must be UTF-8".into())
+pub(crate) fn os_path(path: &[u8]) -> Result<&OsStr, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Ok(OsStr::from_bytes(path))
+    }
+    #[cfg(not(unix))]
+    {
+        std::str::from_utf8(path)
+            .map(OsStr::new)
+            .map_err(|_| "Git worktree paths must be UTF-8 on this platform".into())
+    }
+}
+
+pub(crate) fn display_path(path: &[u8]) -> String {
+    let mut label = String::new();
+    for chunk in path.utf8_chunks() {
+        label.push_str(chunk.valid());
+        for byte in chunk.invalid() {
+            let _ = write!(label, "\\x{byte:02x}");
+        }
+    }
+    label
 }
 
 fn fingerprint(patch: &WorktreePatch, extra: &[&[u8]], diff: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update([patch.side as u8, patch.file.status as u8]);
     for field in [
-        Some(patch.file.path.as_str()),
-        patch.file.previous_path.as_deref(),
+        Some(patch.file.path_bytes()),
+        patch.file.previous_path_bytes(),
     ] {
         hash.update(field.unwrap_or_default());
         hash.update([0]);
     }
     for version in [&patch.before, &patch.after] {
-        if let Some(version) = version {
+        // Conflict stage records already bind the mark to the index versions.
+        if patch.file.status != 'U'
+            && let Some(version) = version
+        {
             hash.update(&version.mode);
             hash.update(&version.object_id);
         }
@@ -453,23 +547,32 @@ struct RawPatch<'a> {
 
 impl RawPatch<'_> {
     fn file(self) -> ChangedFile {
-        ChangedFile {
-            status: self.status,
-            path: String::from_utf8_lossy(self.path).into(),
-            previous_path: self
-                .previous_path
-                .map(|path| String::from_utf8_lossy(path).into()),
-            patch: String::from_utf8_lossy(self.patch).into(),
-        }
+        ChangedFile::new(
+            self.status,
+            self.path,
+            self.previous_path,
+            String::from_utf8_lossy(self.patch).into(),
+        )
     }
 
-    fn worktree_patch(self, side: PatchSide, path: Option<&str>) -> Result<WorktreePatch, String> {
+    fn worktree_patch(
+        self,
+        side: PatchSide,
+        path: Option<&[u8]>,
+        trust_filemode: bool,
+    ) -> WorktreePatch {
         let mut fields = self.header.trim_start_matches(':').split_whitespace();
         let [old_mode, new_mode, old_id, new_id] =
             std::array::from_fn(|_| fields.next().unwrap_or_default());
+        let normalize_mode = !trust_filemode && new_mode == EXECUTABLE_MODE;
+        let new_mode = if normalize_mode {
+            REGULAR_MODE
+        } else {
+            new_mode
+        };
         let before = version(old_mode, old_id);
         let mut after_id = new_id;
-        if new_mode != "000000" && new_id.bytes().all(|byte| byte == b'0') {
+        if new_mode != MISSING_MODE && new_id.bytes().all(|byte| byte == b'0') {
             // The raw record has no object ID for the working tree. A mode-only patch
             // omits the index line because its content stayed the same.
             after_id = self
@@ -485,11 +588,18 @@ impl RawPatch<'_> {
         }
         let after = version(new_mode, after_id);
         let diff = self.patch;
-        worktree_path(self.path)?;
-        self.previous_path.map(worktree_path).transpose()?;
-        let mut file = self.file();
-        if let Some(path) = path {
-            file.path = path.into();
+        let mut file = ChangedFile::new(
+            self.status,
+            path.unwrap_or(self.path),
+            self.previous_path,
+            String::from_utf8_lossy(diff).into(),
+        );
+        if normalize_mode {
+            file.patch = file.patch.replacen(
+                &format!("\nnew file mode {EXECUTABLE_MODE}\n"),
+                &format!("\nnew file mode {REGULAR_MODE}\n"),
+                1,
+            );
         }
         let mut patch = WorktreePatch {
             file,
@@ -499,13 +609,19 @@ impl RawPatch<'_> {
             after,
             reviewed: false,
         };
+        // For a new file with filemode disabled, hash the same normalized patch shown to the reviewer.
+        let diff = if trust_filemode {
+            diff
+        } else {
+            patch.file.patch.as_bytes()
+        };
         patch.fingerprint = fingerprint(&patch, &[], diff);
-        Ok(patch)
+        patch
     }
 }
 
 fn version(mode: &str, object_id: &str) -> Option<PatchVersion> {
-    (mode != "000000").then(|| PatchVersion {
+    (mode != MISSING_MODE).then(|| PatchVersion {
         mode: mode.into(),
         object_id: object_id.into(),
     })

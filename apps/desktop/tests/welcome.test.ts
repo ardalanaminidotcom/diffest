@@ -107,6 +107,7 @@ const revisions = {
 };
 
 it("opens the added checkout, switches worktrees, and renders the selected unified patch", async () => {
+  const previousPathBytes = Array.from("beforeÿ.txt", character => character.codePointAt(0));
   const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([])
@@ -129,7 +130,8 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
         {
           status      : "R",
           path        : "after.txt",
-          previousPath: "before.txt",
+          previousPath: String.raw`before\xff.txt`,
+          previousPathBytes,
           patch       : "-old\n+new\n",
         },
       ],
@@ -186,11 +188,20 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
     expect([...groups].map(group => group.textContent)).toEqual(["Other", "Tests", "Unit"]);
   });
   const rename = element(target, "[aria-label='Changed files'] details details button");
-  expect(rename.textContent).toContain("before.txt");
+  expect(rename.textContent).toContain(String.raw`before\xff.txt`);
   expect(rename.textContent).toContain("Renamed");
   rename.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
+  await vi.waitFor(() => {
+    expect(invoke).toHaveBeenCalledWith("read_file_details", {
+      checkout: main.path,
+      source  : expect.objectContaining({
+        kind: "comparison",
+        previousPathBytes,
+      }),
+    });
+  });
 
   const mode = element(target, "#mode");
   if (!(mode instanceof HTMLSelectElement)) throw new TypeError("Expected the compare mode select");
@@ -286,20 +297,44 @@ it("saves the displayed comparison and resumes shared review progress from anoth
       },
     ],
   };
+  const summary = {
+    id           : 7,
+    baseLabel    : comparison.baseLabel,
+    targetLabel  : comparison.targetLabel,
+    start        : comparison.start,
+    end          : comparison.end,
+    fileCount    : 2,
+    reviewedCount: 0,
+  };
+  const partialSummary = {
+    ...summary,
+    reviewedCount: 1,
+  };
+  const completeSummary = {
+    ...summary,
+    reviewedCount: 2,
+  };
+  const partial = {
+    summary      : partialSummary,
+    reviewedFiles: [0],
+  };
   const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce(comparison)
-    .mockResolvedValueOnce(7)
-    .mockResolvedValueOnce([0])
+    .mockResolvedValueOnce(summary)
+    .mockResolvedValueOnce(partial)
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
       comparison,
-      reviewedFiles: [0],
+      ...partial,
     })
-    .mockResolvedValueOnce([0, 1])
-    .mockResolvedValueOnce([0]);
+    .mockResolvedValueOnce({
+      summary      : completeSummary,
+      reviewedFiles: [0, 1],
+    })
+    .mockResolvedValueOnce(partial);
 
   const target = render();
   await vi.waitFor(() => {
@@ -402,6 +437,7 @@ it("opens a project's saved review directly after startup", async () => {
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
       comparison,
+      summary,
       reviewedFiles: [],
     });
 
@@ -634,14 +670,24 @@ it("applies global layout changes to an inherited review and reopens an explicit
       },
     ],
   };
+  const summary = {
+    id           : 7,
+    baseLabel    : comparison.baseLabel,
+    targetLabel  : comparison.targetLabel,
+    start        : comparison.start,
+    end          : comparison.end,
+    fileCount    : 1,
+    reviewedCount: 0,
+  };
   revisionCommands
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce(comparison)
-    .mockResolvedValueOnce(7)
+    .mockResolvedValueOnce(summary)
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
       comparison,
+      summary,
       reviewedFiles: [],
     });
   layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce("unified");

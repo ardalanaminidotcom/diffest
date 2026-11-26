@@ -7,6 +7,8 @@ type FileDetailsSource
     end: string;
     path: string;
     previousPath: string | null;
+    pathBytes?: number[] | undefined;
+    previousPathBytes?: number[] | undefined;
     status: string;
   }
   | {

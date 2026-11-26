@@ -2,8 +2,9 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, Comparison, ComparisonMode, DiffLayout, FileDetails,
-    FileDetailsSource, Project, Registration, Revisions, StageWorktreePatchResult, WorktreePatch,
+    Application, CommitReview, CommitReviewProgress, CommitReviewSummary, Comparison,
+    ComparisonMode, DiffLayout, FileDetails, FileDetailsSource, Project, Registration, Revisions,
+    StageWorktreePatchResult, WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -46,8 +47,8 @@ async fn save_commit_review(
     checkout: PathBuf,
     comparison: Comparison,
     layout: Option<DiffLayout>,
-) -> Result<i64, String> {
-    app.save_commit_review_with_layout(&checkout, &comparison, layout)
+) -> Result<CommitReviewSummary, String> {
+    app.save_commit_review_with_summary(&checkout, &comparison, layout)
 }
 
 #[tauri::command]
@@ -66,8 +67,8 @@ async fn set_commit_file_reviewed(
     id: i64,
     file_index: usize,
     reviewed: bool,
-) -> Result<Vec<usize>, String> {
-    app.set_commit_file_reviewed(&checkout, id, file_index, reviewed)
+) -> Result<CommitReviewProgress, String> {
+    app.update_commit_file_review(&checkout, id, file_index, reviewed)
 }
 
 #[tauri::command]

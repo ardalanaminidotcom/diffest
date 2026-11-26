@@ -1,3 +1,4 @@
+use crate::git::{GITLINK_MODE, SYMLINK_MODE};
 use crate::{Application, PatchSide, git};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,8 @@ pub enum FileDetailsSource {
         end: String,
         path: String,
         previous_path: Option<String>,
+        path_bytes: Option<Vec<u8>>,
+        previous_path_bytes: Option<Vec<u8>>,
         status: char,
     },
     Worktree {
@@ -53,12 +56,18 @@ impl Application {
                 end,
                 path,
                 previous_path,
+                path_bytes,
+                previous_path_bytes,
                 status,
             } => {
-                let before_path = previous_path.as_deref().unwrap_or(&path);
+                let path = path_bytes.as_deref().unwrap_or(path.as_bytes());
+                let before_path = previous_path_bytes
+                    .as_deref()
+                    .or_else(|| previous_path.as_deref().map(str::as_bytes))
+                    .unwrap_or(path);
                 Ok(FileDetails {
                     before: (status != 'A').then(|| tree_version(&checkout, &start, before_path)),
-                    after: (status != 'D').then(|| tree_version(&checkout, &end, &path)),
+                    after: (status != 'D').then(|| tree_version(&checkout, &end, path)),
                 })
             }
             FileDetailsSource::Worktree { fingerprint } => {
@@ -68,18 +77,19 @@ impl Application {
                     .ok_or(
                         "The patch changed. Refresh uncommitted changes to inspect its details.",
                     )?;
-                let path = &patch.file.path;
+                let path = patch.file.path_bytes();
+                let before_path = patch.file.previous_path_bytes().unwrap_or(path);
+                let before = patch.before.map(|version| {
+                    object_version(&checkout, before_path, &version.mode, &version.object_id)
+                });
                 if patch.file.status == 'U' {
                     return Ok(FileDetails {
-                        before: conflict_base(&checkout, path),
+                        before,
                         after: working_version(&checkout, path),
                     });
                 }
-                let before_path = patch.file.previous_path.as_deref().unwrap_or(path);
                 Ok(FileDetails {
-                    before: patch.before.map(|version| {
-                        object_version(&checkout, before_path, &version.mode, &version.object_id)
-                    }),
+                    before,
                     after: patch.after.map(|version| match patch.side {
                         PatchSide::Staged => {
                             object_version(&checkout, path, &version.mode, &version.object_id)
@@ -93,18 +103,18 @@ impl Application {
     }
 }
 
-fn tree_version(checkout: &Path, revision: &str, path: &str) -> FileVersionDetails {
+fn tree_version(checkout: &Path, revision: &str, path: &[u8]) -> FileVersionDetails {
     let entry = git::resolve_commit(checkout, revision).and_then(|commit| {
-        git::git(
+        git::git_with_paths(
             checkout,
-            &["--literal-pathspecs", "ls-tree", "-z", &commit, "--", path],
+            &["--literal-pathspecs", "ls-tree", "-z", &commit, "--"],
+            &[git::os_path(path)?],
         )
     });
     if let Ok(entry) = entry
-        && let Some((header, name)) = std::str::from_utf8(&entry)
-            .ok()
-            .and_then(|entry| entry.split_once('\t'))
-        && name.strip_suffix('\0') == Some(path)
+        && let Some(tab) = entry.iter().position(|&byte| byte == b'\t')
+        && entry[tab + 1..].strip_suffix(b"\0") == Some(path)
+        && let Ok(header) = std::str::from_utf8(&entry[..tab])
     {
         let mut fields = header.split_whitespace();
         if let (Some(mode), Some(_), Some(object_id)) =
@@ -116,46 +126,21 @@ fn tree_version(checkout: &Path, revision: &str, path: &str) -> FileVersionDetai
     version_details(path, "", None, None)
 }
 
-fn conflict_base(checkout: &Path, path: &str) -> Option<FileVersionDetails> {
-    let output = git::git(
-        checkout,
-        &[
-            "--literal-pathspecs",
-            "ls-files",
-            "--unmerged",
-            "-z",
-            "--",
-            path,
-        ],
-    )
-    .ok()?;
-    let output = std::str::from_utf8(&output).ok()?;
-    [2, 3, 1].into_iter().find_map(|wanted| {
-        output.split_terminator('\0').find_map(|record| {
-            let (header, _) = record.split_once('\t')?;
-            let mut fields = header.split_whitespace();
-            let (mode, object_id, stage) = (fields.next()?, fields.next()?, fields.next()?);
-            (stage.parse::<u8>().ok()? == wanted)
-                .then(|| object_version(checkout, path, mode, object_id))
-        })
-    })
-}
-
-fn object_version(checkout: &Path, path: &str, mode: &str, object_id: &str) -> FileVersionDetails {
-    if mode == "160000" {
+fn object_version(checkout: &Path, path: &[u8], mode: &str, object_id: &str) -> FileVersionDetails {
+    if mode == GITLINK_MODE {
         return version_details(path, mode, None, None);
     }
     let size = git::git(checkout, &["cat-file", "-s", object_id])
         .ok()
         .and_then(|size| String::from_utf8_lossy(&size).trim().parse::<u64>().ok());
     let bytes = size
-        .filter(|&size| size <= PREVIEW_LIMIT && mode != "120000")
+        .filter(|&size| size <= PREVIEW_LIMIT && mode != SYMLINK_MODE)
         .and_then(|_| git::git(checkout, &["cat-file", "blob", object_id]).ok());
     version_details(path, mode, size, bytes.as_deref())
 }
 
-fn working_version(checkout: &Path, path: &str) -> Option<FileVersionDetails> {
-    let file = checkout.join(path);
+fn working_version(checkout: &Path, path: &[u8]) -> Option<FileVersionDetails> {
+    let file = checkout.join(git::os_path(path).ok()?);
     let parent = file.parent()?.canonicalize().ok()?;
     if !parent.starts_with(checkout) {
         return None;
@@ -166,10 +151,10 @@ fn working_version(checkout: &Path, path: &str) -> Option<FileVersionDetails> {
         let size = fs::read_link(file)
             .ok()
             .map(|target| target.as_os_str().len() as u64);
-        return Some(version_details(path, "120000", size, None));
+        return Some(version_details(path, SYMLINK_MODE, size, None));
     }
     if metadata.is_dir() {
-        return Some(version_details(path, "160000", None, None));
+        return Some(version_details(path, GITLINK_MODE, None, None));
     }
     let size = metadata.is_file().then(|| metadata.len());
     let bytes = size.filter(|&size| size <= PREVIEW_LIMIT).and_then(|size| {
@@ -185,16 +170,17 @@ fn working_version(checkout: &Path, path: &str) -> Option<FileVersionDetails> {
 }
 
 fn version_details(
-    path: &str,
+    path: &[u8],
     mode: &str,
     byte_size: Option<u64>,
     bytes: Option<&[u8]>,
 ) -> FileVersionDetails {
+    let path = git::display_path(path);
     let mut preview = None;
     let data = bytes.unwrap_or_default();
     let format = match (mode, data) {
-        ("120000", _) => Some("Symbolic link"),
-        ("160000", _) => Some("Submodule"),
+        (SYMLINK_MODE, _) => Some("Symbolic link"),
+        (GITLINK_MODE, _) => Some("Submodule"),
         _ => {
             if let Some((format, mime)) = image_format(data) {
                 preview = Some(format!("data:{mime};base64,{}", STANDARD.encode(data)));
@@ -204,7 +190,7 @@ fn version_details(
             } else if data.starts_with(b"PK\x03\x04") {
                 Some("ZIP")
             } else {
-                match Path::new(path)
+                match Path::new(&path)
                     .extension()
                     .and_then(|ext| ext.to_str())
                     .map(str::to_ascii_lowercase)
@@ -226,7 +212,7 @@ fn version_details(
         }
     };
     FileVersionDetails {
-        path: path.into(),
+        path,
         byte_size,
         format,
         preview,

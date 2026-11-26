@@ -7,7 +7,7 @@ mod worktree_review;
 
 pub use diff_layout::DiffLayout;
 pub use file_details::{FileDetails, FileDetailsSource};
-pub use reviews::{CommitReview, CommitReviewSummary};
+pub use reviews::{CommitReview, CommitReviewProgress, CommitReviewSummary};
 pub use worktree_review::{PatchSide, PatchVersion, StageWorktreePatchResult, WorktreePatch};
 
 use rusqlite::{Connection, params};
@@ -33,7 +33,7 @@ pub struct Registration {
 pub struct Project {
     pub id: i64,
     pub name: String,
-    pub main_checkout: PathBuf,
+    pub main_checkout: Option<PathBuf>,
     pub worktrees: Vec<Worktree>,
     pub worktree_error: Option<String>,
     pub saved_reviews: Vec<CommitReviewSummary>,
@@ -82,22 +82,59 @@ pub struct ChangedFile {
     pub status: char,
     pub path: String,
     pub previous_path: Option<String>,
+    // IPC uses readable labels, with the original bytes attached only when needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path_bytes: Option<Vec<u8>>,
     pub patch: String,
 }
 
+impl ChangedFile {
+    fn new(status: char, path: &[u8], previous_path: Option<&[u8]>, patch: String) -> Self {
+        Self {
+            status,
+            path: git::display_path(path),
+            previous_path: previous_path.map(git::display_path),
+            path_bytes: invalid_utf8(path),
+            previous_path_bytes: previous_path.and_then(invalid_utf8),
+            patch,
+        }
+    }
+
+    fn path_bytes(&self) -> &[u8] {
+        self.path_bytes.as_deref().unwrap_or(self.path.as_bytes())
+    }
+
+    fn previous_path_bytes(&self) -> Option<&[u8]> {
+        self.previous_path_bytes
+            .as_deref()
+            .or_else(|| self.previous_path.as_deref().map(str::as_bytes))
+    }
+}
+
+fn invalid_utf8(path: &[u8]) -> Option<Vec<u8>> {
+    std::str::from_utf8(path).is_err().then(|| path.to_vec())
+}
+
 impl Project {
-    fn new(id: i64, main_checkout: PathBuf) -> Self {
-        let name = main_checkout
+    fn new(id: i64, common_directory: &Path, main_checkout: Option<PathBuf>) -> Self {
+        let project_path = main_checkout.as_deref().unwrap_or(common_directory);
+        let name = project_path
             .file_name()
-            .unwrap_or(main_checkout.as_os_str())
+            .unwrap_or(project_path.as_os_str())
             .to_string_lossy()
             .into_owned();
+        let worktree_error = main_checkout.is_none().then(|| {
+            "Git did not identify a main checkout. Add the main checkout to enable project settings."
+                .into()
+        });
         Self {
             id,
             name,
             main_checkout,
             worktrees: Vec::new(),
-            worktree_error: None,
+            worktree_error,
             saved_reviews: Vec::new(),
         }
     }
@@ -119,15 +156,18 @@ impl Application {
                     NULLIF(excluded.main_checkout, excluded.common_directory), projects.main_checkout
                  )
                  RETURNING id, main_checkout",
-                params![path_text(&common_directory)?, path_text(&main_checkout)?],
+                params![
+                    path_text(&common_directory)?,
+                    path_text(main_checkout.as_deref().unwrap_or(&common_directory))?,
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| format!("Cannot register project: {error}"))?;
-        if Path::new(&registered_main) != main_checkout {
+        if main_checkout.is_none() && Path::new(&registered_main) != common_directory {
             (main_checkout, worktrees) =
                 git::worktrees(&common_directory, Path::new(&registered_main))?;
         }
-        let mut project = Project::new(id, main_checkout);
+        let mut project = Project::new(id, &common_directory, main_checkout);
         project.worktrees = worktrees;
         project.saved_reviews = reviews::list(&connection, id)?;
         Ok(Registration { project, checkout })
@@ -151,19 +191,20 @@ impl Application {
         let rows = read_projects().map_err(|error| format!("Cannot list projects: {error}"))?;
         rows.into_iter()
             .map(|(id, common_directory, main_checkout)| {
-                let mut project =
-                    match git::worktrees(Path::new(&common_directory), Path::new(&main_checkout)) {
-                        Ok((main_checkout, worktrees)) => {
-                            let mut project = Project::new(id, main_checkout);
-                            project.worktrees = worktrees;
-                            project
-                        }
-                        Err(error) => {
-                            let mut project = Project::new(id, main_checkout.into());
-                            project.worktree_error = Some(error);
-                            project
-                        }
-                    };
+                let common_directory = Path::new(&common_directory);
+                let mut project = match git::worktrees(common_directory, Path::new(&main_checkout))
+                {
+                    Ok((main_checkout, worktrees)) => {
+                        let mut project = Project::new(id, common_directory, main_checkout);
+                        project.worktrees = worktrees;
+                        project
+                    }
+                    Err(error) => {
+                        let mut project = Project::new(id, common_directory, None);
+                        project.worktree_error = Some(error);
+                        project
+                    }
+                };
                 project.saved_reviews = reviews::list(&connection, id)?;
                 Ok(project)
             })
