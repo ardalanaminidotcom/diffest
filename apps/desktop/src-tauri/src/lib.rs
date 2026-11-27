@@ -2,8 +2,8 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, CommitReviewProgress, CommitReviewSummary, Comparison,
-    ComparisonMode, DiffLayout, FileDetails, FileDetailsSource, Project, Registration, Revisions,
+    Application, CommitReview, CommitReviewProgress, Comparison, ComparisonMode, ComparisonSession,
+    DiffLayout, FileDetails, FileDetailsSource, Project, Registration, Revisions,
     StageWorktreePatchResult, WorktreePatch,
 };
 use std::path::PathBuf;
@@ -52,20 +52,26 @@ async fn compare_revisions(
     base: String,
     target: String,
     mode: ComparisonMode,
-) -> Result<Comparison, String> {
+) -> Result<ComparisonSession, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    app.compare_revisions(&checkout, &base, &target, mode)
+    let comparison = app.compare_revisions(&checkout, &base, &target, mode)?;
+    let progress = app.find_commit_review(&checkout, &comparison)?;
+    Ok(ComparisonSession {
+        comparison,
+        progress,
+    })
 }
 
 #[tauri::command]
-async fn save_commit_review(
+async fn start_commit_review(
     app: State<'_, Application>,
     checkout: PathBuf,
     comparison: Comparison,
     layout: Option<DiffLayout>,
-) -> Result<CommitReviewSummary, String> {
+    file_index: usize,
+) -> Result<CommitReviewProgress, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    app.save_commit_review_with_summary(&checkout, &comparison, layout)
+    app.start_commit_review(&checkout, &comparison, layout, file_index)
 }
 
 #[tauri::command]
@@ -166,7 +172,7 @@ pub fn run() {
             register_project,
             open_worktree,
             compare_revisions,
-            save_commit_review,
+            start_commit_review,
             open_commit_review,
             set_commit_file_reviewed,
             open_worktree_review,

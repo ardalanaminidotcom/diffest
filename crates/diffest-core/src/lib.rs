@@ -12,6 +12,7 @@ pub use worktree_review::{PatchSide, PatchVersion, StageWorktreePatchResult, Wor
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -46,8 +47,12 @@ pub struct Worktree {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Revisions {
     pub branches: Vec<String>,
+    pub remote_branches: Vec<String>,
+    pub default_branch: Option<String>,
+    pub current_branch: Option<String>,
     pub commits: Vec<Commit>,
 }
 
@@ -74,6 +79,13 @@ pub struct Comparison {
     pub start: String,
     pub end: String,
     pub files: Vec<ChangedFile>,
+}
+
+#[derive(Serialize)]
+pub struct ComparisonSession {
+    #[serde(flatten)]
+    pub comparison: Comparison,
+    pub progress: Option<CommitReviewProgress>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -272,12 +284,21 @@ impl Application {
         let base_label = base.into();
         let target_label = target.into();
         let base = git::resolve_commit(&checkout, base)?;
-        let end = git::resolve_commit(&checkout, target)?;
+        let working_tree = target == "Working tree";
+        let head = if working_tree { "HEAD" } else { target };
+        let end = git::resolve_commit(&checkout, head)?;
         let start = match mode {
             ComparisonMode::Between => base.clone(),
             ComparisonMode::Divergence => git::merge_base(&checkout, &base, &end)?,
         };
-        let files = git::compare_commits(&checkout, &start, &end)?;
+        let objects = working_tree
+            .then(|| self.review_objects(&checkout))
+            .transpose()?;
+        let end = match &objects {
+            Some(objects) => git::snapshot_worktree(&checkout, objects)?,
+            None => end,
+        };
+        let files = git::compare_commits(&checkout, &start, &end, objects.as_ref())?;
         Ok(Comparison {
             base_label,
             target_label,
@@ -286,6 +307,25 @@ impl Application {
             start,
             end,
             files,
+        })
+    }
+
+    fn review_objects(&self, checkout: &Path) -> Result<git::ReviewObjects, String> {
+        let common_directory = git::common_directory(checkout)?;
+        let key = Sha256::digest(path_text(&common_directory)?.as_bytes());
+        let project_objects = common_directory.join("objects");
+        let alternate = path_text(&project_objects)?
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r");
+        let database = std::path::absolute(&self.database)
+            .map_err(|error| format!("Cannot locate comparison storage: {error}"))?;
+        Ok(git::ReviewObjects {
+            directory: database
+                .with_extension("review-objects")
+                .join(format!("{key:x}")),
+            alternate: format!("\"{alternate}\""),
         })
     }
 

@@ -26,6 +26,9 @@ interface Commit {
 
 interface Revisions {
   branches: string[];
+  remoteBranches: string[];
+  defaultBranch: string | null;
+  currentBranch: string | null;
   commits: Commit[];
 }
 
@@ -86,7 +89,6 @@ export type {
   ChangedFile,
   CommitReview,
   CommitReviewProgress,
-  CommitReviewSummary,
   Comparison,
   ComparisonMode,
   DiffLayout,

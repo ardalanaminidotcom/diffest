@@ -423,6 +423,150 @@ fn linked_checkout_registration_recovers_the_main_checkout_from_git_config() {
 }
 
 #[test]
+fn branch_choices_use_the_default_branch_and_distinguish_different_tips() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = init_project(temp.path());
+    fs::write(checkout.join("tracked.txt"), "initial\n").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "Initial"]);
+    git(&checkout, &["branch", "trunk"]);
+    git(
+        &checkout,
+        &["update-ref", "refs/remotes/origin/trunk", "HEAD"],
+    );
+    git(
+        &checkout,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/trunk",
+        ],
+    );
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    let synced = app.open_worktree(&checkout).unwrap();
+    assert_eq!(synced.default_branch.as_deref(), Some("refs/heads/trunk"));
+    assert_eq!(synced.current_branch.as_deref(), Some("refs/heads/main"));
+    assert!(synced.remote_branches.is_empty());
+
+    fs::write(checkout.join("tracked.txt"), "remote change\n").unwrap();
+    git(&checkout, &["commit", "-am", "Remote change"]);
+    git(
+        &checkout,
+        &["update-ref", "refs/remotes/origin/trunk", "HEAD"],
+    );
+    let diverged = app.open_worktree(&checkout).unwrap();
+    assert_eq!(diverged.remote_branches, ["origin/trunk"]);
+    assert!(diverged.branches.iter().any(|name| name == "trunk"));
+}
+
+#[test]
+fn first_review_mark_saves_the_working_tree_snapshot_without_changing_the_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = init_project(temp.path());
+    fs::write(checkout.join("tracked.txt"), "original\n").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "Base"]);
+    fs::write(checkout.join("tracked.txt"), "staged\n").unwrap();
+    git(&checkout, &["add", "tracked.txt"]);
+    fs::write(checkout.join("tracked.txt"), "working\n").unwrap();
+    fs::write(checkout.join("new.txt"), "untracked\n").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = checkout.join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("post-index-change");
+        fs::write(&hook, "#!/bin/sh\ntouch unexpected-hook.txt\n").unwrap();
+        fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let app = Application::new(temp.path().join("diffest.sqlite3"));
+    app.register_project(&checkout).unwrap();
+    let comparison = app
+        .compare_revisions(&checkout, "HEAD", "Working tree", ComparisonMode::Between)
+        .unwrap();
+    assert!(!checkout.join("unexpected-hook.txt").exists());
+    assert!(
+        !Command::new("git")
+            .current_dir(&checkout)
+            .args(["cat-file", "-e", &comparison.end])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(git(&checkout, &["show", ":tracked.txt"]), "staged");
+    assert_eq!(comparison.files.len(), 2);
+    assert!(
+        comparison
+            .files
+            .iter()
+            .any(|file| file.patch.contains("+working"))
+    );
+    assert!(
+        app.find_commit_review(&checkout, &comparison)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        app.start_commit_review(&checkout, &comparison, None, 2)
+            .is_err()
+    );
+    assert!(
+        app.find_commit_review(&checkout, &comparison)
+            .unwrap()
+            .is_none()
+    );
+
+    let first = app
+        .start_commit_review(&checkout, &comparison, None, 0)
+        .unwrap();
+    assert_eq!(first.reviewed_files, [0]);
+    let again = app
+        .start_commit_review(&checkout, &comparison, None, 1)
+        .unwrap();
+    assert_eq!(again.summary.id, first.summary.id);
+    let resumed = app
+        .find_commit_review(&checkout, &comparison)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.reviewed_files, [0, 1]);
+
+    fs::write(checkout.join("tracked.txt"), "other edit\n").unwrap();
+    let changed = app
+        .compare_revisions(&checkout, "HEAD", "Working tree", ComparisonMode::Between)
+        .unwrap();
+    assert!(
+        app.find_commit_review(&checkout, &changed)
+            .unwrap()
+            .is_none()
+    );
+    let original = app.open_commit_review(&checkout, first.summary.id).unwrap();
+    assert!(
+        original
+            .comparison
+            .files
+            .iter()
+            .any(|file| file.patch.contains("+working"))
+    );
+    let details = app
+        .file_details(
+            &checkout,
+            FileDetailsSource::Comparison {
+                start: original.comparison.start,
+                end: original.comparison.end,
+                path: "tracked.txt".into(),
+                previous_path: None,
+                path_bytes: None,
+                previous_path_bytes: None,
+                status: 'M',
+            },
+        )
+        .unwrap();
+    assert_eq!(details.after.unwrap().byte_size, Some(8));
+}
+
+#[test]
 fn comparing_diverged_branches_uses_effective_commits_and_returns_each_files_patch() {
     let temp = tempfile::tempdir().unwrap();
     let main = init_project(temp.path());

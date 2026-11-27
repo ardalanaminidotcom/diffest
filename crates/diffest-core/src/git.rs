@@ -52,6 +52,30 @@ fn git_with_index(
     paths: &[&OsStr],
     index: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    git_with_storage(directory, args, paths, index, None)
+}
+
+pub(crate) struct ReviewObjects {
+    pub directory: PathBuf,
+    pub alternate: String,
+}
+
+pub(crate) fn git_with_objects(
+    checkout: &Path,
+    args: &[&str],
+    paths: &[&OsStr],
+    objects: Option<&ReviewObjects>,
+) -> Result<Vec<u8>, String> {
+    git_with_storage(checkout, args, paths, None, objects)
+}
+
+fn git_with_storage(
+    directory: &Path,
+    args: &[&str],
+    paths: &[&OsStr],
+    index: Option<&Path>,
+    objects: Option<&ReviewObjects>,
+) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
         .current_dir(directory)
@@ -67,6 +91,11 @@ fn git_with_index(
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
+    if let Some(objects) = objects {
+        command
+            .env("GIT_OBJECT_DIRECTORY", &objects.directory)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects.alternate);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -74,7 +103,11 @@ fn git_with_index(
         command.creation_flags(CREATE_NO_WINDOW);
     }
     let is_diff = args.starts_with(&["diff"]) || args.starts_with(&["--literal-pathspecs", "diff"]);
-    let limit = if is_diff { DIFF_LIMIT } else { GIT_OUTPUT_LIMIT };
+    let limit = if is_diff {
+        DIFF_LIMIT
+    } else {
+        GIT_OUTPUT_LIMIT
+    };
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -225,21 +258,102 @@ fn main_worktree(common_directory: &Path, reported: &Path, main_hint: &Path) -> 
 }
 
 pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
-    let branches = git(
+    let refs = git(
         checkout,
         &[
             "for-each-ref",
-            "--format=%(refname:lstrip=2)",
+            "--format=%(refname)%09%(objectname)%09%(symref)%09%(upstream)",
             "refs/heads/",
+            "refs/remotes/",
         ],
     )?;
-    let branches = String::from_utf8_lossy(&branches)
+    let refs = String::from_utf8_lossy(&refs);
+    let refs: BTreeMap<_, _> = refs
         .lines()
-        .map(str::to_owned)
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            Some((
+                fields.next()?,
+                (fields.next()?, fields.next()?, fields.next()?),
+            ))
+        })
         .collect();
+    let branches: Vec<_> = refs
+        .keys()
+        .filter_map(|name| name.strip_prefix("refs/heads/").map(str::to_owned))
+        .collect();
+    let tracked: BTreeMap<_, _> = refs
+        .iter()
+        .filter_map(|(name, (tip, _, upstream))| {
+            if name.starts_with("refs/heads/")
+                && refs
+                    .get(upstream)
+                    .is_some_and(|(remote_tip, _, _)| remote_tip == tip)
+            {
+                Some((*upstream, *name))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let remote_branches = refs
+        .iter()
+        .filter_map(|(reference, (tip, symbolic, _))| {
+            let name = reference.strip_prefix("refs/remotes/")?;
+            let (_, branch) = name.split_once('/')?;
+            let local = format!("refs/heads/{branch}");
+            let redundant = refs.get(local.as_str()).map_or_else(
+                || tracked.contains_key(reference),
+                |(local, _, _)| local == tip,
+            );
+            (symbolic.is_empty() && !redundant).then(|| name.to_owned())
+        })
+        .collect();
+    let default_branch = refs
+        .get("refs/remotes/origin/HEAD")
+        .or_else(|| {
+            refs.iter()
+                .find(|(name, (_, target, _))| {
+                    name.starts_with("refs/remotes/")
+                        && name.ends_with("/HEAD")
+                        && !target.is_empty()
+                })
+                .map(|(_, entry)| entry)
+        })
+        .and_then(|(_, target, _)| {
+            let (_, branch) = target.strip_prefix("refs/remotes/")?.split_once('/')?;
+            let local = format!("refs/heads/{branch}");
+            Some(if refs.contains_key(local.as_str()) {
+                local
+            } else {
+                tracked.get(target).unwrap_or(target).to_string()
+            })
+        })
+        .or_else(|| {
+            let configured = git(checkout, &["config", "--get", "init.defaultBranch"]).ok();
+            configured
+                .as_deref()
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(str::trim)
+                .into_iter()
+                .chain(["main", "master"])
+                .map(|name| format!("refs/heads/{name}"))
+                .find(|name| refs.contains_key(name.as_str()))
+                .or_else(|| {
+                    ["refs/remotes/origin/main", "refs/remotes/origin/master"]
+                        .into_iter()
+                        .find(|name| refs.contains_key(*name))
+                        .map(str::to_owned)
+                })
+                .or_else(|| (branches.len() == 1).then(|| format!("refs/heads/{}", branches[0])))
+        });
+    let current_branch = git(checkout, &["symbolic-ref", "--quiet", "HEAD"])
+        .ok()
+        .map(|name| String::from_utf8_lossy(&name).trim_end().into());
     let mut args = vec![
         "log",
         "--branches",
+        "--remotes",
         "--max-count=100",
         "--no-show-signature",
         "--no-notes",
@@ -263,7 +377,13 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
             subject: subject.into(),
         });
     }
-    Ok(Revisions { branches, commits })
+    Ok(Revisions {
+        branches,
+        remote_branches,
+        default_branch,
+        current_branch,
+        commits,
+    })
 }
 
 pub(crate) fn resolve_commit(checkout: &Path, revision: &str) -> Result<String, String> {
@@ -280,6 +400,25 @@ pub(crate) fn resolve_commit(checkout: &Path, revision: &str) -> Result<String, 
     Ok(String::from_utf8_lossy(&output).trim_end().into())
 }
 
+pub(crate) fn resolve_tree(
+    checkout: &Path,
+    revision: &str,
+    objects: Option<&ReviewObjects>,
+) -> Result<String, String> {
+    let output = git_with_objects(
+        checkout,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{revision}^{{tree}}"),
+        ],
+        &[],
+        objects,
+    )?;
+    Ok(String::from_utf8_lossy(&output).trim_end().into())
+}
+
 pub(crate) fn merge_base(checkout: &Path, base: &str, target: &str) -> Result<String, String> {
     let output = git(checkout, &["merge-base", base, target])
         .map_err(|error| format!("Cannot find a common ancestor: {error}"))?;
@@ -290,15 +429,70 @@ pub(crate) fn compare_commits(
     checkout: &Path,
     start: &str,
     end: &str,
+    objects: Option<&ReviewObjects>,
 ) -> Result<Vec<ChangedFile>, String> {
     let mut args = vec!["diff", "--patch-with-raw", "-z", "--find-renames"];
     args.extend(PATCH_OPTIONS);
     args.extend([start, end, "--"]);
-    let output = git(checkout, &args)?;
+    let output = git_with_objects(checkout, &args, &[], objects)?;
     Ok(parse_patch(&output)?
         .into_iter()
         .map(RawPatch::file)
         .collect())
+}
+
+fn index_error(error: io::Error) -> String {
+    format!("Cannot prepare the Git index: {error}")
+}
+
+fn copy_index(index: &Path, candidate: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(index) {
+        Ok(metadata) if metadata.is_file() => {
+            fs::copy(index, candidate).map_err(index_error)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Ok(_) => Err("The Git index is not a regular file.".into()),
+        Err(error) => Err(index_error(error)),
+    }
+}
+
+pub(crate) fn snapshot_worktree(
+    checkout: &Path,
+    objects: &ReviewObjects,
+) -> Result<String, String> {
+    check_repository_filters(checkout)?;
+    // Keep working-tree contents out of the project's object database and refs.
+    fs::create_dir_all(&objects.directory)
+        .map_err(|error| format!("Cannot store comparison objects: {error}"))?;
+    let directory = worktree_directory(checkout)?;
+    let scratch = tempfile::tempdir_in(&directory).map_err(index_error)?;
+    let candidate = scratch.path().join("index");
+    let hooks = format!("core.hooksPath={}", scratch.path().display());
+    if !copy_index(&directory.join("index"), &candidate)? {
+        git_with_storage(
+            checkout,
+            &["-c", &hooks, "read-tree", "HEAD"],
+            &[],
+            Some(&candidate),
+            Some(objects),
+        )?;
+    }
+    git_with_storage(
+        checkout,
+        &["-c", &hooks, "add", "--all", "--"],
+        &[],
+        Some(&candidate),
+        Some(objects),
+    )?;
+    let tree = git_with_storage(
+        checkout,
+        &["-c", &hooks, "write-tree"],
+        &[],
+        Some(&candidate),
+        Some(objects),
+    )?;
+    Ok(String::from_utf8_lossy(&tree).trim_end().into())
 }
 
 pub(crate) fn uncommitted_patches(checkout: &Path) -> Result<Vec<WorktreePatch>, String> {
@@ -503,7 +697,6 @@ pub(crate) fn stage_reviewed_patch(
         .open(&lock_path)
         .map_err(open_error)?;
     let lock = tempfile::TempPath::try_from_path(lock_path).map_err(open_error)?;
-    let index_error = |error| format!("Cannot prepare the Git index: {error}");
 
     let changed = "The unstaged patch changed. Review it again before staging.";
     let patch = uncommitted_patches(checkout)?
@@ -530,14 +723,7 @@ pub(crate) fn stage_reviewed_patch(
     // only if the resulting entries match the reviewed versions and paths.
     let scratch = tempfile::tempdir_in(directory).map_err(index_error)?;
     let candidate = scratch.path().join("index");
-    match fs::symlink_metadata(&index) {
-        Ok(metadata) if metadata.is_file() => {
-            fs::copy(&index, &candidate).map_err(index_error)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Ok(_) => return Err("The Git index is not a regular file.".into()),
-        Err(error) => return Err(index_error(error)),
-    }
+    copy_index(&index, &candidate)?;
 
     let list = ["ls-files", "--stage", "-z"];
     let original = git(checkout, &list)?;

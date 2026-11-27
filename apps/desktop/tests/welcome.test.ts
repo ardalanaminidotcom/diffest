@@ -143,6 +143,13 @@ function input(target: HTMLElement, selector: string, value: string): void {
   flushSync();
 }
 
+function chooseSource(target: HTMLElement, revision: string): void {
+  element(target, ".revision-picker .source > summary").click();
+  flushSync();
+  input(target, "#base", revision);
+  element(target, "#compare button").click();
+}
+
 const main = {
   path  : "/tmp/demo",
   branch: "main",
@@ -160,8 +167,11 @@ const project = {
   savedReviews : [],
 };
 const revisions = {
-  branches: ["main", "topic"],
-  commits : [
+  defaultBranch : null,
+  currentBranch : null,
+  remoteBranches: [],
+  branches      : ["main", "topic"],
+  commits       : [
     {
       id     : "abc123",
       subject: "Initial commit",
@@ -352,11 +362,7 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   });
   expect(commands).toHaveBeenCalledWith("open_worktree", { checkout: main.path });
 
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  input(target, "#base", "abc123");
-  input(target, "#target", "refs/heads/topic");
-  element(target, "#compare button").click();
+  chooseSource(target, "abc123");
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe("+new content\n");
     expect(target.querySelector(".file-title .size-change.additions")?.textContent.trim()).toBe("+1.4 KB");
@@ -365,10 +371,9 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   expect(commands).toHaveBeenCalledWith("compare_revisions", {
     checkout: main.path,
     base    : "abc123",
-    target  : "refs/heads/topic",
+    target  : "HEAD",
     mode    : "between",
   });
-  expect(target.textContent).toContain("def456");
   await vi.waitFor(() => {
     const groups = target.querySelectorAll("[aria-label='Changed files'] summary");
     expect([...groups].map(group => group.textContent)).toEqual(["Other", "Tests", "Unit"]);
@@ -393,31 +398,17 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
     });
   });
 
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  const mode = element(target, "#mode");
-  if (!(mode instanceof HTMLSelectElement)) throw new TypeError("Expected the compare mode select");
-
-  mode.value = "divergence";
-  mode.dispatchEvent(new Event("change", { bubbles: true }));
-  flushSync();
-  element(target, "#compare button").click();
+  chooseSource(target, "main");
   await vi.waitFor(() => {
-    expect(target.textContent).toContain("No changes between these commits.");
-  });
-  expect(commands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ mode: "divergence" }));
-  expect(target.textContent).toContain("first");
-
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  mode.value = "between";
-  mode.dispatchEvent(new Event("change", { bubbles: true }));
-  flushSync();
-  element(target, "#compare button").click();
-  await vi.waitFor(() => {
-    expect(target.querySelector("dd")?.textContent).toBe("abc123");
+    expect(target.textContent).toContain("No differences.");
   });
   expect(commands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ mode: "between" }));
+
+  element(target, ".revision-picker .source > summary").click();
+  element(target, ".revision-picker .mode").click();
+  await vi.waitFor(() => {
+    expect(commands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ mode: "divergence" }));
+  });
 });
 
 it("reopens a registered project and reports a comparison error", async () => {
@@ -463,19 +454,123 @@ it("reopens a registered project and reports a comparison error", async () => {
     expect(target.querySelector<HTMLDetailsElement>("#projects .project-list details")?.open).toBe(true);
   });
   expect(target.querySelectorAll("#projects .project-list summary")).toHaveLength(2);
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  input(target, "#base", "missing");
-  element(target, "#compare button").click();
+  chooseSource(target, "missing");
   await vi.waitFor(() => {
     expect(target.querySelector("[role=alert]")?.textContent).toBe("Unknown revision");
+  });
+});
+
+it("opens the default branch comparison and saves its first review mark", async () => {
+  const comparison = {
+    baseLabel  : "refs/heads/main",
+    targetLabel: "HEAD",
+    mode       : "divergence",
+    base       : "main-tip",
+    start      : "ancestor",
+    end        : "topic-tip",
+    files      : [
+      {
+        status      : "A",
+        path        : "new.txt",
+        previousPath: null,
+        patch       : "+new\n",
+      },
+    ],
+    progress: null,
+  };
+  const checkoutRevisions = {
+    ...revisions,
+    defaultBranch: "refs/heads/main",
+    currentBranch: "refs/heads/topic",
+  };
+  const progress = {
+    summary: {
+      id           : 7,
+      baseLabel    : comparison.baseLabel,
+      targetLabel  : comparison.targetLabel,
+      start        : comparison.start,
+      end          : comparison.end,
+      fileCount    : 1,
+      reviewedCount: 1,
+    },
+    reviewedFiles: [0],
+  };
+  const resumedComparison = {
+    ...comparison,
+    progress,
+  };
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(checkoutRevisions)
+    .mockResolvedValueOnce(comparison)
+    .mockResolvedValueOnce(progress)
+    .mockResolvedValueOnce(checkoutRevisions)
+    .mockResolvedValueOnce(resumedComparison);
+  const target = render();
+  const topic = "#projects li:nth-child(2) button";
+  await vi.waitFor(() => expect(target.querySelector(topic)).toBeTruthy());
+  element(target, topic).click();
+  const mark = ".file-stream input[type=checkbox]";
+  await vi.waitFor(() => expect(target.querySelector(mark)).toBeTruthy());
+  expect(revisionCommands).toHaveBeenLastCalledWith("compare_revisions", {
+    checkout: linked.path,
+    base    : "refs/heads/main",
+    target  : "HEAD",
+    mode    : "divergence",
+  });
+  element(target, mark).click();
+  await vi.waitFor(() => expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed"));
+  expect(revisionCommands).toHaveBeenLastCalledWith("start_commit_review", expect.objectContaining({ fileIndex: 0 }));
+  element(target, topic).click();
+  await vi.waitFor(() => {
+    expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(true);
+    expect(revisionCommands).toHaveBeenLastCalledWith("compare_revisions", expect.objectContaining({ target: "HEAD" }));
+  });
+});
+
+it("offers distinct remote branch tips and switches from a clean checkout to a working-tree comparison", async () => {
+  const comparison = {
+    baseLabel  : "refs/remotes/origin/main",
+    targetLabel: "Working tree",
+    mode       : "between",
+    base       : "upstream-tip",
+    start      : "upstream-tip",
+    end        : "working-tree",
+    files      : [],
+    progress   : null,
+  };
+  revisionCommands.mockResolvedValueOnce([project]).mockResolvedValueOnce({
+    ...revisions,
+    defaultBranch : "refs/heads/main",
+    currentBranch : "refs/heads/main",
+    remoteBranches: ["origin/main"],
+  })
+    .mockResolvedValueOnce(comparison);
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("#projects li button")).toBeTruthy());
+  element(target, "#projects li button").click();
+  await vi.waitFor(() => expect(target.textContent).toContain("Choose a source branch or commit"));
+  element(target, ".revision-picker .target > summary").click();
+  element(target, ".revision-picker .target .option:nth-child(2)").click();
+  await vi.waitFor(() => {
+    expect(element(target, ".revision-picker .source > summary").textContent).toContain("HEAD");
+    expect(element(target, ".revision-picker .target > summary").textContent).toContain("Working tree");
+  });
+  chooseSource(target, "origin/main");
+  await vi.waitFor(() => {
+    expect(revisionCommands).toHaveBeenLastCalledWith("compare_revisions", {
+      checkout: main.path,
+      base    : "refs/remotes/origin/main",
+      target  : "Working tree",
+      mode    : "between",
+    });
   });
 });
 
 it("saves the displayed comparison and resumes shared review progress from another worktree", async () => {
   const comparison = {
     baseLabel  : "refs/heads/main",
-    targetLabel: "refs/heads/topic",
+    targetLabel: "HEAD",
     mode       : "divergence",
     base       : "basetip",
     start      : "ancestor",
@@ -521,7 +616,6 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce(comparison)
-    .mockResolvedValueOnce(summary)
     .mockResolvedValueOnce(partial)
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
@@ -543,34 +637,16 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     expect(target.querySelector("#base")).toBeTruthy();
   });
 
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  input(target, "#base", "refs/heads/main");
-  input(target, "#target", "refs/heads/topic");
-  element(target, "#compare button").click();
+  chooseSource(target, "refs/heads/main");
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe("+first\n");
   });
 
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  input(target, "#target", "HEAD");
-  element(target, "[aria-controls='compare-setup']").click();
   const secondFileToggle = element(target, "#file-review-1 h2 button");
   secondFileToggle.click();
   flushSync();
   expect(secondFileToggle.getAttribute("aria-expanded")).toBe("false");
-  element(target, "#save-review").click();
-  await vi.waitFor(() => {
-    const saved = target.querySelector("[aria-label='Saved commit reviews'] button");
-    expect(saved?.textContent).toContain("refs/heads/topic");
-  });
-  expect(commands).toHaveBeenLastCalledWith("save_commit_review", {
-    checkout: main.path,
-    comparison,
-    layout  : null,
-  });
-  expect(secondFileToggle.getAttribute("aria-expanded")).toBe("false");
+  expect(target.querySelector("[aria-label='Saved commit reviews']")).toBeNull();
 
   const firstMark = "#file-review-0 input[type=checkbox]";
   const secondMark = "#file-review-1 input[type=checkbox]";
@@ -578,6 +654,13 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
   });
+  expect(commands).toHaveBeenLastCalledWith("start_commit_review", {
+    checkout : main.path,
+    comparison,
+    layout   : null,
+    fileIndex: 0,
+  });
+  expect(secondFileToggle.getAttribute("aria-expanded")).toBe("false");
   const file = "[aria-label='Changed files'] details button";
   expect(element(target, file).textContent).toContain("Reviewed");
 
@@ -664,9 +747,8 @@ it("opens a project's saved review directly after startup", async () => {
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
   });
-  expect(target.querySelector<HTMLInputElement>("#target")?.value).toBe("topic");
-  expect(target.querySelector<HTMLSelectElement>("#mode")?.value).toBe("divergence");
-  expect(target.textContent).toContain("No changes between these commits.");
+  expect(element(target, ".revision-picker .target > summary").textContent).toContain("topic");
+  expect(target.textContent).toContain("No differences.");
   expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
     checkout: main.path,
     id      : 7,
@@ -892,7 +974,7 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector("#worktree-review")).toBeTruthy());
-  expect(element(target, "#compare-setup").hidden).toBe(true);
+  expect(element(target, ".revision-picker .target > summary").getAttribute("aria-label")).toBe("Target Working tree");
   const sharedFile = "#file-review-0";
   await vi.waitFor(() => expect(element(target, `${ sharedFile } h2 button`).getAttribute("aria-expanded")).toBe("false"));
   element(target, `${ sharedFile } h2 button`).click();
@@ -1055,12 +1137,15 @@ it("applies global layout changes to an inherited review and reopens an explicit
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce(comparison)
-    .mockResolvedValueOnce(summary)
+    .mockResolvedValueOnce({
+      summary,
+      reviewedFiles: [0],
+    })
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
       comparison,
       summary,
-      reviewedFiles: [],
+      reviewedFiles: [0],
     });
   layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce("unified");
 
@@ -1068,17 +1153,15 @@ it("applies global layout changes to an inherited review and reopens an explicit
   await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector("#base")).toBeTruthy());
-  element(target, "[aria-controls='compare-setup']").click();
-  flushSync();
-  input(target, "#base", "main");
-  element(target, "#compare button").click();
+  chooseSource(target, "abc123");
   const unified = "[aria-label='Unified patch']";
   const split = "[aria-label='Split patch']";
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
 
-  element(target, "#save-review").click();
+  element(target, ".file-stream input[type=checkbox]").click();
   const saved = "[aria-label='Saved commit reviews'] button";
   await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
+  element(target, "#file-review-0 h2 button").click();
   element(target, "#projects footer summary[title=Settings]").click();
   const select = target.querySelector<HTMLSelectElement>("#default-diff-layout");
   if (!select) throw new Error("Missing default diff layout");
@@ -1100,6 +1183,8 @@ it("applies global layout changes to an inherited review and reopens an explicit
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeNull());
   element(target, ".saved-reviews > summary").click();
   element(target, saved).click();
+  await vi.waitFor(() => expect(target.querySelector("#file-review-0 h2 button")).toBeTruthy());
+  element(target, "#file-review-0 h2 button").click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
   expect(select.value).toBe("split");
 });

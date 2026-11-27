@@ -69,9 +69,12 @@ impl Application {
                     .as_deref()
                     .or_else(|| previous_path.as_deref().map(str::as_bytes))
                     .unwrap_or(path);
+                let review_objects = self.review_objects(&checkout)?;
+                let objects = review_objects.directory.is_dir().then_some(&review_objects);
                 Ok(FileDetails {
-                    before: (status != 'A').then(|| tree_version(&checkout, &start, before_path)),
-                    after: (status != 'D').then(|| tree_version(&checkout, &end, path)),
+                    before: (status != 'A')
+                        .then(|| tree_version(&checkout, &start, before_path, None)),
+                    after: (status != 'D').then(|| tree_version(&checkout, &end, path, objects)),
                 })
             }
             FileDetailsSource::Worktree {
@@ -98,7 +101,13 @@ impl Application {
                 let path = patch.file.path_bytes();
                 let before_path = patch.file.previous_path_bytes().unwrap_or(path);
                 let before = patch.before.map(|version| {
-                    object_version(&checkout, before_path, &version.mode, &version.object_id)
+                    object_version(
+                        &checkout,
+                        before_path,
+                        &version.mode,
+                        &version.object_id,
+                        None,
+                    )
                 });
                 if patch.file.status == 'U' {
                     return Ok(FileDetails {
@@ -110,7 +119,7 @@ impl Application {
                     before,
                     after: patch.after.map(|version| match patch.side {
                         PatchSide::Staged => {
-                            object_version(&checkout, path, &version.mode, &version.object_id)
+                            object_version(&checkout, path, &version.mode, &version.object_id, None)
                         }
                         PatchSide::Unstaged => working_version(&checkout, path)
                             .unwrap_or_else(|| version_details(path, &version.mode, None, None)),
@@ -121,12 +130,18 @@ impl Application {
     }
 }
 
-fn tree_version(checkout: &Path, revision: &str, path: &[u8]) -> FileVersionDetails {
-    let entry = git::resolve_commit(checkout, revision).and_then(|commit| {
-        git::git_with_paths(
+fn tree_version(
+    checkout: &Path,
+    revision: &str,
+    path: &[u8],
+    objects: Option<&git::ReviewObjects>,
+) -> FileVersionDetails {
+    let entry = git::resolve_tree(checkout, revision, objects).and_then(|tree| {
+        git::git_with_objects(
             checkout,
-            &["--literal-pathspecs", "ls-tree", "-z", &commit, "--"],
+            &["--literal-pathspecs", "ls-tree", "-z", &tree, "--"],
             &[git::os_path(path)?],
+            objects,
         )
     });
     if let Ok(entry) = entry
@@ -138,22 +153,30 @@ fn tree_version(checkout: &Path, revision: &str, path: &[u8]) -> FileVersionDeta
         if let (Some(mode), Some(_), Some(object_id)) =
             (fields.next(), fields.next(), fields.next())
         {
-            return object_version(checkout, path, mode, object_id);
+            return object_version(checkout, path, mode, object_id, objects);
         }
     }
     version_details(path, "", None, None)
 }
 
-fn object_version(checkout: &Path, path: &[u8], mode: &str, object_id: &str) -> FileVersionDetails {
+fn object_version(
+    checkout: &Path,
+    path: &[u8],
+    mode: &str,
+    object_id: &str,
+    objects: Option<&git::ReviewObjects>,
+) -> FileVersionDetails {
     if mode == GITLINK_MODE {
         return version_details(path, mode, None, None);
     }
-    let size = git::git(checkout, &["cat-file", "-s", object_id])
+    let size = git::git_with_objects(checkout, &["cat-file", "-s", object_id], &[], objects)
         .ok()
         .and_then(|size| String::from_utf8_lossy(&size).trim().parse::<u64>().ok());
     let bytes = size
         .filter(|&size| size <= PREVIEW_LIMIT && mode != SYMLINK_MODE)
-        .and_then(|_| git::git(checkout, &["cat-file", "blob", object_id]).ok());
+        .and_then(|_| {
+            git::git_with_objects(checkout, &["cat-file", "blob", object_id], &[], objects).ok()
+        });
     version_details(path, mode, size, bytes.as_deref())
 }
 
