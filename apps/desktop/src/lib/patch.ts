@@ -162,5 +162,5 @@ function splitHunk(lines: readonly PatchLine[]): SplitRow[] {
   return rows;
 }
 
-export type { PatchLine };
+export type { PatchLine, PatchSummary };
 export { omitHunkHeaders, parsePatch, splitHunk, summarizePatch };

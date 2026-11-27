@@ -183,9 +183,9 @@ const revisions = {
 it("reviews a continuous file stream in sidebar order and jumps to a collapsed file", async () => {
   const patches = ["one.txt", "after.txt", "two.txt"].map(path => ({
     path,
-    status      : "A",
+    status      : "M",
     previousPath: null,
-    patch       : `@@ -0,0 +1 @@\n+${ path } content\n`,
+    patch       : `@@ -1 +1 @@\n-old content\n+${ path } content\n`,
     side        : "unstaged",
     fingerprint : path,
     reviewed    : false,
@@ -214,6 +214,10 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
   await vi.waitFor(() => {
     expect(displayedNames(headings)).toEqual(["one.txt", "two.txt", "after.txt"]);
     expect(displayedNames(headings)).toEqual(displayedNames(sidebarNames));
+    const source = element(target, "nav[aria-label='Changed files'] > details > summary");
+    expect(source.getAttribute("aria-label")).toBe("Source, lines added 2, lines removed 2");
+    expect(source.textContent).toContain("+2");
+    expect(source.textContent).toContain("−2");
   });
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
   expect(target.textContent).not.toContain("@@");
@@ -223,6 +227,12 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
   const viewed = element(file, "input[type=checkbox]");
   viewed.click();
   await vi.waitFor(() => expect(disclosure.getAttribute("aria-expanded")).toBe("false"));
+  const testCategory = element(target, "nav[aria-label='Changed files'] > details:nth-child(2) > summary");
+  testCategory.click();
+  expect(testCategory.parentElement?.hasAttribute("open")).toBe(false);
+  expect(testCategory.textContent).toContain("+1");
+  expect(testCategory.textContent).toContain("−1");
+  testCategory.click();
   expect(file.querySelector("[aria-label='Unified patch']")).toBeNull();
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(2);
 
@@ -413,7 +423,7 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   });
   await vi.waitFor(() => {
     const groups = target.querySelectorAll("[aria-label='Changed files'] summary");
-    expect([...groups].map(group => group.textContent)).toEqual(["Source", "Tests", "Unit"]);
+    expect([...groups].map(group => group.textContent.trim())).toEqual(["Source", "Tests", "Unit"]);
   });
   const rename = element(target, "[aria-label='Changed files'] details details button");
   expect(rename.textContent).toContain(String.raw`before\xff.txt`);

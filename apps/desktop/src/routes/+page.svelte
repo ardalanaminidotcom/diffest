@@ -616,7 +616,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
               <p id="review-progress" role="status">{reviewStatus(files.length, reviewedFileCount)}</p>
               <progress aria-label="Review progress" value={reviewedFileCount} max={files.length}></progress>
             </header>
-            <CategorizedFileTree {groups}>
+            <CategorizedFileTree {groups} {patchSummaries}>
               {#snippet entry(index)}
                 {@const file = files[index]}
                 {@const worktreePatch = worktreeReview?.[index]}
