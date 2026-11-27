@@ -83,6 +83,7 @@ type DiffLayout = "unified" | "split";
 type ComparisonMode = "between" | "divergence";
 
 export type {
+  ChangedFile,
   CommitReview,
   CommitReviewProgress,
   CommitReviewSummary,

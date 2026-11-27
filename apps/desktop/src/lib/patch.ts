@@ -8,7 +8,6 @@ interface PatchLine {
 }
 
 interface Hunk {
-  heading: string;
   lines: PatchLine[];
 }
 
@@ -17,14 +16,15 @@ interface SplitRow {
   after: PatchLine | undefined;
 }
 
-interface ChangeCounts {
+interface PatchSummary {
   added: number;
   removed: number;
+  lineCount: number;
 }
 
 interface ParsedPatch {
   hunks: Hunk[];
-  counts: ChangeCounts;
+  summary: PatchSummary;
   tooManyLines: boolean;
 }
 
@@ -33,11 +33,12 @@ const maxStructuredLines = 5000;
 
 function scanPatch(patch: string, render: boolean): ParsedPatch {
   const hunks: Hunk[] = [];
-  const counts: ChangeCounts = {
-    added  : 0,
-    removed: 0,
-  };
   const lines = patch.replace(/\n$/u, "").split("\n");
+  const summary: PatchSummary = {
+    added    : 0,
+    removed  : 0,
+    lineCount: lines.length,
+  };
   const tooManyLines = lines.length > maxStructuredLines;
   const collectHunks = render && !tooManyLines;
   let hunk: Hunk | undefined;
@@ -50,10 +51,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
     if (range) {
       inHunk = true;
       if (collectHunks) {
-        hunk = {
-          heading: line,
-          lines  : [],
-        };
+        hunk = { lines: [] };
         hunks.push(hunk);
         before = Number(range[1]);
         after = Number(range[2]);
@@ -65,8 +63,8 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
     if (!inHunk) continue;
 
     const marker = line.charAt(0);
-    if (marker === "-") counts.removed++;
-    if (marker === "+") counts.added++;
+    if (marker === "-") summary.removed++;
+    if (marker === "+") summary.added++;
     if (!hunk) continue;
 
     const text = line.slice(1);
@@ -106,7 +104,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
         hunks.length = 0;
         return {
           hunks,
-          counts,
+          summary,
           tooManyLines,
         };
       }
@@ -114,7 +112,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
   }
   return {
     hunks,
-    counts,
+    summary,
     tooManyLines,
   };
 }
@@ -123,8 +121,13 @@ function parsePatch(patch: string): ParsedPatch {
   return scanPatch(patch, true);
 }
 
-function countChanges(patch: string): ChangeCounts {
-  return scanPatch(patch, false).counts;
+function summarizePatch(patch: string): PatchSummary {
+  return scanPatch(patch, false).summary;
+}
+
+function omitHunkHeaders(patch: string): string {
+  return patch.split("\n").filter(line => !hunkHeader.test(line))
+    .join("\n");
 }
 
 function splitHunk(lines: PatchLine[]): SplitRow[] {
@@ -159,4 +162,4 @@ function splitHunk(lines: PatchLine[]): SplitRow[] {
   return rows;
 }
 
-export { countChanges, parsePatch, splitHunk };
+export { omitHunkHeaders, parsePatch, splitHunk, summarizePatch };

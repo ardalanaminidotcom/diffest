@@ -26,4 +26,21 @@ interface Categorization {
   categories: FileCategory[];
 }
 
-export type { Categorization, CategoryRule, FileCategory, RuleSettings };
+type FileGroups = Map<string, Map<string | null, number[]>>;
+
+function groupFiles(paths: string[], categories: FileCategory[]): FileGroups {
+  const groups: FileGroups = new Map();
+  for (const [index] of paths.entries()) {
+    const category = categories[index]?.category ?? "Other";
+    const subcategory = categories[index]?.subcategory ?? null;
+    const subgroups = groups.get(category) ?? new Map<string | null, number[]>();
+    const files = subgroups.get(subcategory) ?? [];
+    files.push(index);
+    subgroups.set(subcategory, files);
+    groups.set(category, subgroups);
+  }
+  return groups;
+}
+
+export { groupFiles };
+export type { Categorization, CategoryRule, FileCategory, FileGroups, RuleSettings };

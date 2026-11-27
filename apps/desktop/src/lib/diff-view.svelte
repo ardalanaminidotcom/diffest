@@ -2,7 +2,7 @@
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { DiffLayout } from "./revisions.js";
 import hljs from "highlight.js/lib/common";
-import { parsePatch, splitHunk } from "./patch.js";
+import { omitHunkHeaders, parsePatch, splitHunk } from "./patch.js";
 
 interface Properties {
   patch: string;
@@ -49,9 +49,8 @@ function highlight(text: string, language: string): string | null {
     {:else}
       <colgroup><col class="number" /><col class="number" /><col /></colgroup>
     {/if}
-    <tbody>
-      {#each parsed.hunks as hunk}
-        <tr><th class="hunk" colspan={layout === "split" ? 4 : 3}><code>{hunk.heading}</code></th></tr>
+    {#each parsed.hunks as hunk}
+      <tbody>
         {#if layout === "split"}
           {#each splitHunk(hunk.lines) as row}
             <tr>
@@ -76,14 +75,14 @@ function highlight(text: string, language: string): string | null {
             </tr>
           {/each}
         {/if}
-      {/each}
-    </tbody>
+      </tbody>
+    {/each}
   </table>
 {:else}
   {#if patch}
     {#if parsed.tooManyLines}<p class="raw-notice">Large patch · Showing raw text</p>{/if}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of long patch lines.) -->
-    <pre aria-label="Unified patch" tabindex="0">{patch}</pre>
+    <pre aria-label="Unified patch" tabindex="0">{omitHunkHeaders(patch)}</pre>
   {/if}
 {/if}
 
@@ -97,13 +96,7 @@ thead th {
   font-weight: 600;
 }
 .split th + th, .split td:nth-child(3) { border-inline-start: 1px solid var(--border); }
-.hunk {
-  padding: 0.2rem 0.75rem;
-  color: var(--muted);
-  background: var(--surface);
-  border-block: 1px solid var(--border);
-  font-weight: 400;
-}
+tbody + tbody tr:first-child td { border-block-start: 1px solid var(--border); }
 pre, table { font: 0.875rem/1.55 ui-monospace, "SF Mono", Consolas, monospace; }
 code { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
 .number { width: 3.75em; }

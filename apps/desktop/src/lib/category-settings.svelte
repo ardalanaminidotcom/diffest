@@ -26,6 +26,8 @@ let settings = $state<Categorization>();
 let loadedCheckout = $state<string | null>(null);
 let error = $state("");
 let pendingRead = 0;
+let requestedCheckout: string | null | undefined;
+let requestedPaths: string[] = [];
 let savingLayout = $state(false);
 
 async function load(checkout: string | null, filePaths: string[]): Promise<void> {
@@ -52,8 +54,15 @@ function refresh(): void {
 }
 
 $effect(() => {
+  const checkout = mainCheckout;
+  const filePaths = paths;
+  if (requestedCheckout === checkout && requestedPaths.length === filePaths.length
+    && requestedPaths.every((path, index) => path === filePaths[index])) return;
+
+  requestedCheckout = checkout;
+  requestedPaths = filePaths;
   categories = [];
-  refresh();
+  void load(checkout, filePaths);
 });
 
 async function save(checkout: string | null, version: string, rules: CategoryRule[] | null): Promise<void> {

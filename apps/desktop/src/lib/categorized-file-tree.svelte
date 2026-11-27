@@ -1,28 +1,14 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
-import type { FileCategory } from "./category-settings.js";
+import type { FileGroups } from "./category-settings.js";
 import type { Snippet } from "svelte";
 
 interface Properties {
-  paths: string[];
-  categories: FileCategory[];
+  groups: FileGroups;
   entry: Snippet<[number]>;
 }
 
-let { paths, categories, entry }: Properties = $props();
-const groups = $derived.by(() => {
-  const grouped = new Map<string, Map<string | null, number[]>>();
-  for (const [index] of paths.entries()) {
-    const category = categories[index]?.category ?? "Other";
-    const subcategory = categories[index]?.subcategory ?? null;
-    const subgroups = grouped.get(category) ?? new Map<string | null, number[]>();
-    const files = subgroups.get(subcategory) ?? [];
-    files.push(index);
-    subgroups.set(subcategory, files);
-    grouped.set(category, subgroups);
-  }
-  return grouped;
-});
+let { groups, entry }: Properties = $props();
 </script>
 
 <nav aria-label="Changed files">

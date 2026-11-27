@@ -50,5 +50,9 @@ function isImageVersion(version: FileVersion | null): boolean {
   return version?.preview != null || imageFormats.has(version?.format ?? "");
 }
 
-export { formatSizeChange, isImageVersion };
+function fileName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+export { fileName, formatSizeChange, isImageVersion };
 export type { FileDetails, FileDetailsSource, FileVersion };

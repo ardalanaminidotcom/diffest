@@ -12,15 +12,48 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const revisionCommands = vi.fn();
 const layoutCommands = vi.fn();
+const NativeIntersectionObserver = globalThis.IntersectionObserver;
+const fileVisibility = new WeakMap<Element, (nearViewport: boolean) => void>();
 let defaultDiffLayout = "unified";
 let loadWorktreePatches = false;
 beforeEach(() => {
+  vi.stubGlobal("IntersectionObserver", class extends NativeIntersectionObserver {
+
+    public constructor(private readonly onIntersection: IntersectionObserverCallback) {
+      super(onIntersection);
+    }
+
+    public override observe(target: Element): void {
+      const bounds = target.getBoundingClientRect();
+      const updateVisibility = (isIntersecting: boolean): void => {
+        const entry: IntersectionObserverEntry = {
+          target,
+          isIntersecting,
+          intersectionRatio : isIntersecting ? 1 : 0,
+          boundingClientRect: bounds,
+          intersectionRect  : bounds,
+          rootBounds        : bounds,
+          time              : 0,
+        };
+        this.onIntersection([entry], this);
+      };
+      fileVisibility.set(target, updateVisibility);
+      queueMicrotask(() => updateVisibility(true));
+    }
+
+  });
+  onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
+
+  vi.mocked(invoke).mockClear();
   revisionCommands.mockReset();
   layoutCommands.mockReset().mockResolvedValue(null);
   defaultDiffLayout = "unified";
   loadWorktreePatches = false;
   vi.mocked(invoke).mockImplementation(async (command, parameters) => {
     if (command === "read_review_layout" || command === "set_review_layout") return layoutCommands(command, parameters);
+
     if (command === "save_default_diff_layout") {
       if (parameters && "layout" in parameters) defaultDiffLayout = String(parameters.layout);
       return null;
@@ -136,7 +169,71 @@ const revisions = {
   ],
 };
 
-it("opens the added checkout, switches worktrees, and renders the selected unified patch", async () => {
+it("reviews a continuous file stream in sidebar order and jumps to a collapsed file", async () => {
+  const patches = ["one.txt", "after.txt", "two.txt"].map(path => ({
+    path,
+    status      : "A",
+    previousPath: null,
+    patch       : `@@ -0,0 +1 @@\n+${ path } content\n`,
+    side        : "unstaged",
+    fingerprint : path,
+    reviewed    : false,
+  }));
+  const reviewed = patches.map(patch => ({
+    ...patch,
+    reviewed: patch.path === "after.txt",
+  }));
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(patches)
+    .mockResolvedValueOnce(reviewed)
+    .mockResolvedValueOnce(patches);
+  loadWorktreePatches = true;
+  const target = render();
+  const worktree = "aside ul button";
+  await vi.waitFor(() => expect(target.querySelector(worktree)).toBeTruthy());
+  element(target, worktree).click();
+
+  const headings = "[aria-label='File diffs'] h2";
+  const sidebarNames = "[aria-label='Changed files'] button strong";
+  function displayedNames(selector: string): string[] {
+    return Array.from(target.querySelectorAll(selector), name => name.textContent.trim());
+  }
+  await vi.waitFor(() => {
+    expect(displayedNames(headings)).toEqual(["one.txt", "two.txt", "after.txt"]);
+    expect(displayedNames(headings)).toEqual(displayedNames(sidebarNames));
+  });
+  expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
+  expect(target.textContent).not.toContain("@@");
+
+  const file = element(target, "#file-review-1");
+  const disclosure = element(file, "h2 button");
+  const viewed = element(file, "input[type=checkbox]");
+  viewed.click();
+  await vi.waitFor(() => expect(disclosure.getAttribute("aria-expanded")).toBe("false"));
+  expect(file.querySelector("[aria-label='Unified patch']")).toBeNull();
+  expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(2);
+
+  const scroll = vi.spyOn(file, "scrollIntoView");
+  element(target, "[aria-label='Changed files'] button[title='after.txt']").click();
+  expect(document.activeElement).toBe(disclosure);
+  expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+
+  disclosure.click();
+  flushSync();
+  expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+  expect(file.querySelector<HTMLInputElement>("input[type=checkbox]")?.checked).toBe(true);
+  disclosure.click();
+  flushSync();
+  expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  viewed.click();
+  await vi.waitFor(() => expect(disclosure.getAttribute("aria-expanded")).toBe("true"));
+  expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
+});
+
+it("opens the added checkout, switches worktrees, and shows unified patches with size changes", async () => {
   const previousPathBytes = Array.from("beforeÿ.txt", character => character.codePointAt(0));
   const commands = revisionCommands;
   commands
@@ -236,10 +333,10 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
   expect(rename.textContent).toContain("Renamed");
   rename.click();
   flushSync();
-  expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
-  expect(target.querySelector(".size-change")).toBeNull();
+  const renamedFile = element(target, "#file-review-1");
+  expect(renamedFile.querySelector("pre")?.textContent).toBe("-old\n+new\n");
   await vi.waitFor(() => {
-    expect(target.querySelector(".file-title .size-change.deletions")?.textContent.trim()).toBe("−320 B");
+    expect(renamedFile.querySelector(".file-title .size-change.deletions")?.textContent.trim()).toBe("−320 B");
   });
   await vi.waitFor(() => {
     expect(invoke).toHaveBeenCalledWith("read_file_details", {
@@ -414,6 +511,10 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   flushSync();
   input(target, "#target", "HEAD");
   element(target, "[aria-controls='compare-setup']").click();
+  const secondFileToggle = element(target, "#file-review-1 h2 button");
+  secondFileToggle.click();
+  flushSync();
+  expect(secondFileToggle.getAttribute("aria-expanded")).toBe("false");
   element(target, "#save-review").click();
   await vi.waitFor(() => {
     const saved = target.querySelector("[aria-label='Saved commit reviews'] button");
@@ -424,8 +525,11 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     comparison,
     layout  : null,
   });
+  expect(secondFileToggle.getAttribute("aria-expanded")).toBe("false");
 
-  element(target, "#review-file").click();
+  const firstMark = "#file-review-0 input[type=checkbox]";
+  const secondMark = "#file-review-1 input[type=checkbox]";
+  element(target, firstMark).click();
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
   });
@@ -435,23 +539,24 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   expect(element(target, "#projects").hidden).toBe(false);
   element(target, "aside ul li:nth-child(2) button").click();
   await vi.waitFor(() => {
-    expect(target.querySelector("pre")).toBeNull();
+    expect(target.querySelector("[aria-label='File diffs']")).toBeNull();
   });
   element(target, ".saved-reviews > summary").click();
   element(target, "[aria-label='Saved commit reviews'] button").click();
   await vi.waitFor(() => {
-    expect(target.querySelector("pre")?.textContent).toBe("+first\n");
+    expect(target.querySelector("#file-review-0 pre")).toBeNull();
+    expect(target.querySelector("#file-review-1 pre")?.textContent).toBe("+second\n");
   });
   expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
     checkout: linked.path,
     id      : 7,
   });
-  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
+  expect(target.querySelector<HTMLInputElement>(firstMark)?.checked).toBe(true);
   expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
 
   element(target, `${ file }:nth-of-type(2)`).click();
   flushSync();
-  element(target, "#review-file").click();
+  element(target, secondMark).click();
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
   });
@@ -463,7 +568,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     reviewed : true,
   });
 
-  element(target, "#review-file").click();
+  element(target, secondMark).click();
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
   });
@@ -583,6 +688,10 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   loadWorktreePatches = true;
   const worktree = "aside ul button";
   const files = "[aria-label='Changed files'] button";
+  const unstagedFile = "#file-review-1";
+  const mark = `${ unstagedFile } input[type=checkbox]`;
+  const stage = `${ unstagedFile } .stage-file`;
+  const unstagedDiff = `${ unstagedFile } pre`;
   await vi.waitFor(() => {
     expect(target.querySelector(worktree)?.textContent).toContain("main");
   });
@@ -600,7 +709,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   expect(unstagedEntry.textContent).toContain("Unstaged");
   unstagedEntry.click();
   flushSync();
-  expect(target.querySelector("pre")?.textContent).toBe(unstaged.patch);
+  expect(target.querySelector(unstagedDiff)?.textContent).toBe(unstaged.patch);
   expect(invoke).toHaveBeenCalledWith("read_file_details", {
     checkout: main.path,
     source  : {
@@ -612,15 +721,15 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
       previousPathBytes: null,
     },
   });
-  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
-  expect(target.querySelector<HTMLInputElement>(".file-title > #review-file")?.checked).toBe(false);
-  element(target, "#review-file").click();
+  expect(element(target, stage).hasAttribute("disabled")).toBe(true);
+  expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(false);
+  element(target, mark).click();
   await vi.waitFor(() => {
     expect(target.querySelector("[role='alert']")?.textContent).toBe("Unable to save the review mark.");
   });
-  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(false);
-  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
-  element(target, "#review-file").click();
+  expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(false);
+  expect(element(target, stage).hasAttribute("disabled")).toBe(true);
+  element(target, mark).click();
   await vi.waitFor(() => {
     expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
   });
@@ -630,9 +739,10 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     reviewed   : true,
   });
 
-  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
-  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(false);
-  element(target, "#stage-file").click();
+  expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(true);
+  expect(target.querySelector(unstagedDiff)).toBeNull();
+  expect(element(target, stage).hasAttribute("disabled")).toBe(false);
+  element(target, stage).click();
   await vi.waitFor(() => {
     expect(element(target, "#review-progress").textContent).toBe("0 of 2 reviewed");
   });
@@ -642,17 +752,17 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   });
   expect(element(target, "[role='alert']").textContent).toBe("Review the current patch before staging.");
   expect(element(target, `${ files }:nth-of-type(2)`).textContent).toContain("Conflicted");
-  expect(target.querySelector("pre")?.textContent).toBe("+updated\n");
-  element(target, "#review-file").click();
+  expect(target.querySelector(unstagedDiff)?.textContent).toBe("+updated\n");
+  element(target, mark).click();
   await vi.waitFor(() => {
-    expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
+    expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(true);
   });
-  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
+  expect(element(target, stage).hasAttribute("disabled")).toBe(true);
 
   element(target, "#worktree-review").click();
   await vi.waitFor(() => {
     expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: main.path });
-    expect(target.querySelector("pre")?.textContent).toBe(refreshedConflict.patch);
+    expect(target.querySelector(unstagedDiff)?.textContent).toBe(refreshedConflict.patch);
   });
   expect(element(target, "#projects").hidden).toBe(false);
   element(target, ".app-bar [aria-controls=changed-files]").click();
@@ -738,8 +848,12 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector("#worktree-review")).toBeTruthy());
   expect(element(target, "#compare-setup").hidden).toBe(true);
+  const sharedFile = "#file-review-0";
+  await vi.waitFor(() => expect(element(target, `${ sharedFile } h2 button`).getAttribute("aria-expanded")).toBe("false"));
+  element(target, `${ sharedFile } h2 button`).click();
   await vi.waitFor(() => {
-    const unified = element(target, "[aria-label='Unified patch']");
+    const unified = element(target, `${ sharedFile } [aria-label='Unified patch']`);
+    expect(unified.textContent).not.toContain("@@");
     expect(unified.querySelector(".hljs-keyword")?.textContent).toBe("const");
     expect(unified.querySelector("img")).toBeNull();
     expect(unified.textContent).toContain('const value = "<img>";');
@@ -750,10 +864,10 @@ it("shows numbered changes and file counts, and restores the chosen split layout
     expect(element(target, "[aria-label='Changed files'] button").textContent).toContain("−2");
   });
   expect(target.querySelector(".app-bar [aria-label='Diff layout']")).toBeTruthy();
-  expect(target.querySelector("#review-file[type=checkbox]")).toBeTruthy();
+  expect(target.querySelector(`${ sharedFile } input[type=checkbox]`)).toBeTruthy();
   expect(target.textContent).not.toContain("Patch headers");
   expect(target.textContent).not.toContain("File details");
-  const split = "[aria-label='Split patch']";
+  const split = `${ sharedFile } [aria-label='Split patch']`;
   element(target, "[aria-label='Diff layout'] button:last-child").click();
   await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
   const projectsToggle = ".app-bar button[aria-controls=projects]";
@@ -778,7 +892,7 @@ it("shows numbered changes and file counts, and restores the chosen split layout
     ["6", "end", "7", "end"],
     ["15", "last\n\\ No newline at end of file", "", ""],
   ]);
-  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
+  expect(target.querySelector<HTMLInputElement>(`${ sharedFile } input[type=checkbox]`)?.checked).toBe(true);
   expect(element(target, "[aria-label='Changed files'] [aria-pressed=true]").textContent).toContain(file.path);
   const filesToggle = ".app-bar [aria-controls=changed-files]";
   const filesButton = element(target, filesToggle);
@@ -809,18 +923,22 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   });
   expect(target.querySelector(split)).toBeTruthy();
 
-  const typeEntry = element(target, "button[title=link]");
+  const typeEntry = element(target, "#changed-files button[title=link]");
   expect(typeEntry.textContent).toContain("+1");
   expect(typeEntry.textContent).toContain("−1");
   typeEntry.click();
+  element(target, "#file-review-1 h2 button").click();
   flushSync();
-  expect(element(target, split).textContent).toContain("ordinary file");
-  expect(element(target, split).textContent).toContain("symlink target");
+  const typePatch = element(target, "#file-review-1 [aria-label='Split patch']");
+  expect(typePatch.textContent).toContain("ordinary file");
+  expect(typePatch.textContent).toContain("symlink target");
 
-  element(target, 'button[title="generated.txt"]').click();
+  element(target, '#changed-files button[title="generated.txt"]').click();
+  element(target, "#file-review-2 h2 button").click();
   flushSync();
-  expect(element(target, "[aria-label='Unified patch']").textContent).toBe(largePatch.patch);
-  expect(target.querySelector(split)).toBeNull();
+  expect(element(target, "#file-review-2 [aria-label='Unified patch']").textContent)
+    .toBe("+generated\n".repeat(generatedLineCount));
+  expect(target.querySelector(split)).toBeTruthy();
 });
 
 it("keeps a mode-only image patch visible alongside its previews", async () => {
@@ -846,6 +964,20 @@ it("keeps a mode-only image patch visible alongside its previews", async () => {
     expect(target.querySelector("[aria-label='Image comparison'] img")).toBeTruthy();
   });
   expect(target.querySelector("pre")?.textContent).toContain("old mode 100644\nnew mode 100755");
+
+  const imageFile = element(target, "#file-review-0");
+  const updateVisibility = fileVisibility.get(imageFile);
+  if (!updateVisibility) throw new Error("Expected the file to be observed");
+
+  updateVisibility(false);
+  flushSync();
+  expect(imageFile.querySelector(".patch-placeholder")).toBeTruthy();
+  expect(imageFile.querySelector("[aria-label='Image comparison']")).toBeNull();
+  expect(imageFile.querySelector(".size-change")?.textContent.trim()).toBe("0 B");
+
+  updateVisibility(true);
+  await vi.waitFor(() => expect(imageFile.querySelector("[aria-label='Image comparison'] img")).toBeTruthy());
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_file_details")).toHaveLength(2);
 });
 
 it("applies global layout changes to an inherited review and reopens an explicit saved choice", async () => {
