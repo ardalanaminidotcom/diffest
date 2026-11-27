@@ -20,7 +20,7 @@ let scope = $state(untrack(() => {
   const project = configurableProjects.find(item => item.id === activeProjectId);
   return project?.id.toString() ?? "";
 }));
-let section = $state<"general" | "categories">(untrack(() => scope ? "categories" : "general"));
+let section = $state<"general" | "categories">(untrack(() => (scope ? "categories" : "general")));
 const checkout = $derived(configurableProjects.find(project => project.id.toString() === scope)?.mainCheckout ?? null);
 
 let loadedCheckout = $state<string | null>();
@@ -210,6 +210,7 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
   inset: 0;
   display: grid;
   grid-template-columns: max(10rem, 20vw) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   background: var(--canvas);
 }
 .settings-sidebar {
