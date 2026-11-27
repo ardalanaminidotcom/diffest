@@ -1060,6 +1060,11 @@ fn fetch_discovers_remote_targets_without_switching_the_checkout() {
     let app = Application::new(temp.path().join("reviews.sqlite3"));
     assert!(app.fetch_revisions(&checkout).is_err());
     app.register_project(&checkout).unwrap();
+    git(&checkout, &["config", "core.sshCommand", "ssh"]);
+    assert!(
+        matches!(app.fetch_revisions(&checkout), Err(error) if error.contains("repository-local Git"))
+    );
+    git(&checkout, &["config", "--unset", "core.sshCommand"]);
     assert!(
         app.open_worktree(&checkout)
             .unwrap()
@@ -1131,6 +1136,63 @@ fn fetch_discovers_remote_targets_without_switching_the_checkout() {
             .is_err()
     );
     assert!(active.comparison.files[0].patch.contains("+release"));
+}
+
+#[test]
+fn working_tree_comparison_releases_inactive_snapshots_and_reuses_marks() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = init_project(temp.path());
+    let path = checkout.join("notes.txt");
+    fs::write(&path, "base\n").unwrap();
+    git(&checkout, &["add", "notes.txt"]);
+    git(&checkout, &["commit", "-m", "Base"]);
+    fs::write(&path, "first edit\n").unwrap();
+    fs::write(checkout.join("other.txt"), "keep this review unfinished\n").unwrap();
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    app.register_project(&checkout).unwrap();
+    let open = || {
+        app.open_comparison(
+            &checkout,
+            "HEAD",
+            "Working tree",
+            ComparisonMode::Between,
+            false,
+        )
+        .unwrap()
+    };
+    let size = |comparison: &diffest_core::Comparison| {
+        app.file_details(
+            &checkout,
+            FileDetailsSource::Comparison {
+                start: comparison.start.clone(),
+                end: comparison.end.clone(),
+                path: "notes.txt".into(),
+                previous_path: None,
+                path_bytes: None,
+                previous_path_bytes: None,
+                status: 'M',
+            },
+        )
+        .unwrap()
+        .after
+        .unwrap()
+        .byte_size
+    };
+    let first = open();
+    assert_eq!(size(&first.comparison), Some(11));
+    fs::write(&path, "second edit\n").unwrap();
+    let second = open();
+    assert_eq!(size(&first.comparison), None);
+    assert_eq!(size(&second.comparison), Some(12));
+    app.start_comparison_review(&checkout, &second.selection, &second.comparison, None, 0)
+        .unwrap();
+    app.leave_comparison_review().unwrap();
+    assert_eq!(size(&second.comparison), None);
+    let reopened = open();
+    assert_eq!(reopened.progress.unwrap().reviewed_files, [0]);
+    assert_eq!(size(&reopened.comparison), Some(12));
+    assert!(!temp.path().join("reviews.review-objects").exists());
 }
 
 #[test]

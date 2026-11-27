@@ -92,12 +92,13 @@ fn git_with_storage(
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_OPTIONAL_LOCKS", "0")
         // Keep index operations from using a checkout-configured fsmonitor hook.
-        .args(["-c", "core.fsmonitor=false"])
-        .args(args)
-        .args(paths);
+        .args(["-c", "core.fsmonitor=false"]);
     if matches!(args, ["fetch", ..] | ["-c", _, "fetch", ..]) {
-        command.env("GIT_TERMINAL_PROMPT", "0");
+        command
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["-c", "protocol.ext.allow=never"]);
     }
+    command.args(args).args(paths);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
@@ -266,6 +267,23 @@ fn main_worktree(common_directory: &Path, reported: &Path, main_hint: &Path) -> 
 }
 
 pub(crate) fn fetch_branches(checkout: &Path) -> Result<(), String> {
+    check_repository_config(
+        checkout,
+        |key| {
+            matches!(
+                key,
+                b"core.sshcommand"
+                    | b"core.gitproxy"
+                    | b"core.askpass"
+                    | b"core.alternaterefscommand"
+                    | b"protocol.allow"
+            ) || (key.starts_with(b"credential.") && key.ends_with(b".helper"))
+                || (key.starts_with(b"remote.")
+                    && (key.ends_with(b".uploadpack") || key.ends_with(b".vcs")))
+                || (key.starts_with(b"protocol.") && key.ends_with(b".allow"))
+        },
+        "Diffest cannot fetch with repository-local Git command or transport overrides.",
+    )?;
     // Fetch and remote-tracking ref updates must not run checkout-configured hooks.
     let scratch =
         tempfile::tempdir().map_err(|error| format!("Cannot disable Git hooks: {error}"))?;
@@ -708,6 +726,20 @@ pub(crate) fn uncommitted_patches_for(
 
 // Git may invoke clean/process filters when comparing working files as well as staging.
 fn check_repository_filters(checkout: &Path) -> Result<(), String> {
+    check_repository_config(
+        checkout,
+        |key| {
+            key.starts_with(b"filter.") && (key.ends_with(b".clean") || key.ends_with(b".process"))
+        },
+        "Diffest cannot review or stage changes with repository-local Git filters.",
+    )
+}
+
+fn check_repository_config(
+    checkout: &Path,
+    reject: impl Fn(&[u8]) -> bool,
+    message: &str,
+) -> Result<(), String> {
     let config = git(
         checkout,
         &["config", "--includes", "--show-scope", "--null", "--list"],
@@ -715,13 +747,8 @@ fn check_repository_filters(checkout: &Path) -> Result<(), String> {
     let mut entries = config.split(|&byte| byte == 0);
     while let (Some(scope), Some(entry)) = (entries.next(), entries.next()) {
         let key = entry.split(|&byte| byte == b'\n').next().unwrap_or_default();
-        if matches!(scope, b"local" | b"worktree")
-            && key.starts_with(b"filter.")
-            && (key.ends_with(b".clean") || key.ends_with(b".process"))
-        {
-            return Err(
-                "Diffest cannot review or stage changes with repository-local Git filters.".into(),
-            );
+        if matches!(scope, b"local" | b"worktree") && reject(key) {
+            return Err(message.into());
         }
     }
     Ok(())

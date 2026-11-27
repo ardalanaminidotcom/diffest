@@ -18,11 +18,20 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 pub struct Application {
     database: PathBuf,
-    active_review: std::sync::Mutex<Option<i64>>,
+    active_review: Mutex<Option<i64>>,
+    active_snapshot: Mutex<Option<Arc<ActiveSnapshot>>>,
+}
+
+struct ActiveSnapshot {
+    _storage: tempfile::TempDir,
+    objects: git::ReviewObjects,
+    checkout: PathBuf,
+    end: String,
 }
 
 #[derive(Serialize)]
@@ -163,6 +172,7 @@ impl Application {
         Self {
             database,
             active_review: Default::default(),
+            active_snapshot: Default::default(),
         }
     }
 
@@ -294,24 +304,33 @@ impl Application {
         mode: ComparisonMode,
     ) -> Result<Comparison, String> {
         let checkout = git::checkout_root(checkout)?;
-        let base_label = base.into();
-        let target_label = target.into();
-        let base = git::resolve_commit(&checkout, base)?;
-        let working_tree = target == "Working tree";
-        let head = if working_tree { "HEAD" } else { target };
-        let end = git::resolve_commit(&checkout, head)?;
-        let start = match mode {
-            ComparisonMode::Between => base.clone(),
-            ComparisonMode::Divergence => git::merge_base(&checkout, &base, &end)?,
-        };
-        let objects = working_tree
+        let objects = (target == "Working tree")
             .then(|| self.review_objects(&checkout))
             .transpose()?;
-        let end = match &objects {
-            Some(objects) => git::snapshot_worktree(&checkout, objects)?,
+        Self::compare_with_objects(&checkout, base, target, mode, objects.as_ref())
+    }
+
+    fn compare_with_objects(
+        checkout: &Path,
+        base: &str,
+        target: &str,
+        mode: ComparisonMode,
+        objects: Option<&git::ReviewObjects>,
+    ) -> Result<Comparison, String> {
+        let base_label = base.into();
+        let target_label = target.into();
+        let base = git::resolve_commit(checkout, base)?;
+        let head = if objects.is_some() { "HEAD" } else { target };
+        let end = git::resolve_commit(checkout, head)?;
+        let start = match mode {
+            ComparisonMode::Between => base.clone(),
+            ComparisonMode::Divergence => git::merge_base(checkout, &base, &end)?,
+        };
+        let end = match objects {
+            Some(objects) => git::snapshot_worktree(checkout, objects)?,
             None => end,
         };
-        let files = git::compare_commits(&checkout, &start, &end, objects.as_ref())?;
+        let files = git::compare_commits(checkout, &start, &end, objects)?;
         Ok(Comparison {
             base_label,
             target_label,
@@ -326,18 +345,28 @@ impl Application {
     fn review_objects(&self, checkout: &Path) -> Result<git::ReviewObjects, String> {
         let common_directory = git::common_directory(checkout)?;
         let key = Sha256::digest(path_text(&common_directory)?.as_bytes());
+        let database = std::path::absolute(&self.database)
+            .map_err(|error| format!("Cannot locate comparison storage: {error}"))?;
+        Self::objects_with_alternate(
+            &common_directory,
+            database
+                .with_extension("review-objects")
+                .join(format!("{key:x}")),
+        )
+    }
+
+    fn objects_with_alternate(
+        common_directory: &Path,
+        directory: PathBuf,
+    ) -> Result<git::ReviewObjects, String> {
         let project_objects = common_directory.join("objects");
         let alternate = path_text(&project_objects)?
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
             .replace('\n', "\\n")
             .replace('\r', "\\r");
-        let database = std::path::absolute(&self.database)
-            .map_err(|error| format!("Cannot locate comparison storage: {error}"))?;
         Ok(git::ReviewObjects {
-            directory: database
-                .with_extension("review-objects")
-                .join(format!("{key:x}")),
+            directory,
             alternate: format!("\"{alternate}\""),
         })
     }

@@ -35,6 +35,9 @@ const highlightPatchLimit = 100_000;
 </script>
 
 {#if parsed.tooManyLines}<p class="raw-notice">Large patch · Showing raw text</p>{/if}
+{#if !raw && parsed.modeLines.length}
+  <pre class="mode-change" aria-label="File mode change">{parsed.modeLines.join("\n")}</pre>
+{/if}
 {#if blocks.length}
   <div class="patch-rows" class:raw-rows={raw} use:mountDiffRows={{
     blocks, windowRows, beforeLanguage, afterLanguage, highlight: highlight && patch.length <= highlightPatchLimit,
@@ -73,6 +76,7 @@ pre, .patch-rows :global(pre), .patch-rows :global(table) { font: 0.875rem/1.55 
 .patch-rows :global(.removed > .line-number:first-child), .patch-rows :global(.line-number.removed) { box-shadow: inset 1px 0 var(--removed-ink); }
 .patch-rows :global(.blank) { background: var(--surface); }
 pre { margin: 0; padding: 0.75rem; overflow: auto; }
+.mode-change { padding-block: 0.35rem; color: var(--muted); border-block-end: 1px solid var(--border); }
 .raw-rows { overflow-x: auto; padding-block: 0.75rem; }
 .raw-rows :global(pre) { margin: 0; padding-inline: 0.75rem; }
 .raw-notice { margin: 0; padding: 0.35rem 0.75rem; color: var(--muted); background: var(--surface); }

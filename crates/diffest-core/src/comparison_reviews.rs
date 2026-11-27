@@ -1,5 +1,6 @@
 use crate::{
-    Application, Comparison, ComparisonMode, ComparisonSession, DiffLayout, git, path_text,
+    ActiveSnapshot, Application, Comparison, ComparisonMode, ComparisonSession, DiffLayout, git,
+    path_text,
     reviews::{CommitReviewProgress, project_id, read_review, review_progress, store_review},
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 
 pub(crate) const SCHEMA: &str = "
@@ -162,6 +164,7 @@ impl Application {
                 .map(|id| read_review(&db, project, id))
                 .transpose()
                 .map_err(storage_error)?;
+            let mut snapshot = None;
             let (mut comparison, progress) = match saved {
                 Some(saved) if !refresh && worktree.is_empty() => {
                     // The stored patch remains readable even after a force-push.
@@ -174,8 +177,43 @@ impl Application {
                     )
                 }
                 saved => {
-                    let latest =
-                        self.compare_revisions(checkout, &selection.base, &selection.target, mode)?;
+                    let checkout = git::checkout_root(checkout)?;
+                    let storage = if worktree.is_empty() {
+                        None
+                    } else {
+                        let mut builder = tempfile::Builder::new();
+                        builder.prefix("diffest-review-");
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            builder.permissions(std::fs::Permissions::from_mode(0o700));
+                        }
+                        let storage = builder.tempdir().map_err(|error| {
+                            format!("Cannot create a working-tree snapshot: {error}")
+                        })?;
+                        let objects = Self::objects_with_alternate(
+                            &git::common_directory(&checkout)?,
+                            std::path::absolute(storage.path()).map_err(|error| {
+                                format!("Cannot locate the working-tree snapshot: {error}")
+                            })?,
+                        )?;
+                        Some((storage, objects))
+                    };
+                    let latest = Self::compare_with_objects(
+                        &checkout,
+                        &selection.base,
+                        &selection.target,
+                        mode,
+                        storage.as_ref().map(|(_, objects)| objects),
+                    )?;
+                    snapshot = storage.map(|(storage, objects)| {
+                        Arc::new(ActiveSnapshot {
+                            _storage: storage,
+                            objects,
+                            checkout,
+                            end: latest.end.clone(),
+                        })
+                    });
                     let progress = if let Some(saved) = saved {
                         let unchanged: HashSet<_> = saved
                             .reviewed_files
@@ -234,7 +272,12 @@ impl Application {
                 .transpose()
                 .map_err(storage_error)?
                 .flatten();
+            let mut active_snapshot = self
+                .active_snapshot
+                .lock()
+                .map_err(|error| error.to_string())?;
             db.commit().map_err(storage_error)?;
+            *active_snapshot = snapshot;
             *active = next;
             Ok(ComparisonSession {
                 comparison,
@@ -350,11 +393,14 @@ impl Application {
             .active_review
             .lock()
             .map_err(|error| error.to_string())?;
-        if active.is_none() {
-            return Ok(());
+        if active.is_some() {
+            finish_review(&self.connect()?, *active).map_err(storage_error)?;
+            *active = None;
         }
-        finish_review(&self.connect()?, *active).map_err(storage_error)?;
-        *active = None;
+        self.active_snapshot
+            .lock()
+            .map_err(|error| error.to_string())?
+            .take();
         Ok(())
     }
 

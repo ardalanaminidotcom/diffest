@@ -69,8 +69,21 @@ impl Application {
                     .as_deref()
                     .or_else(|| previous_path.as_deref().map(str::as_bytes))
                     .unwrap_or(path);
-                let review_objects = self.review_objects(&checkout)?;
-                let objects = review_objects.directory.is_dir().then_some(&review_objects);
+                let snapshot = self
+                    .active_snapshot
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .as_ref()
+                    .filter(|snapshot| snapshot.checkout == checkout && snapshot.end == end)
+                    .cloned();
+                let legacy = snapshot
+                    .is_none()
+                    .then(|| self.review_objects(&checkout))
+                    .transpose()?;
+                let objects = snapshot
+                    .as_ref()
+                    .map(|snapshot| &snapshot.objects)
+                    .or_else(|| legacy.as_ref().filter(|objects| objects.directory.is_dir()));
                 Ok(FileDetails {
                     before: (status != 'A')
                         .then(|| tree_version(&checkout, &start, before_path, None)),

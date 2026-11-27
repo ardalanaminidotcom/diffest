@@ -266,7 +266,7 @@ onMount(() => {
 });
 
 async function leaveComparison(): Promise<void> {
-  if (review) await invoke("leave_comparison_review");
+  if (openReviewState?.kind === "comparison") await invoke("leave_comparison_review");
   comparisonUpdate = "current";
 }
 

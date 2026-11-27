@@ -1043,6 +1043,8 @@ it("shows numbered changes and file counts, and restores the chosen split layout
     previousPath: null,
     patch       : [
       "diff --git a/shared.ts b/shared.ts",
+      "old mode 100644",
+      "new mode 100755",
       "--- a/shared.ts",
       "+++ b/shared.ts",
       "@@ -3,4 +3,5 @@",
@@ -1108,6 +1110,8 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   element(target, `${ sharedFile } h2 button`).click();
   await vi.waitFor(() => {
     const unified = element(target, `${ sharedFile } [aria-label='Unified patch']`);
+    expect(element(target, `${ sharedFile } [aria-label='File mode change']`).textContent)
+      .toBe("old mode 100644\nnew mode 100755");
     expect(unified.textContent).not.toContain("@@");
     expect(unified.querySelector(".hljs-keyword")?.textContent).toBe("const");
     expect(unified.querySelector("img")).toBeNull();
@@ -1125,6 +1129,8 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   const split = `${ sharedFile } [aria-label='Split patch']`;
   element(target, "[aria-label='Diff layout'] button:last-child").click();
   await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
+  expect(element(target, `${ sharedFile } [aria-label='File mode change']`).textContent)
+    .toBe("old mode 100644\nnew mode 100755");
   const projectsToggle = ".app-bar button[aria-controls=projects]";
   element(target, projectsToggle).click();
   flushSync();

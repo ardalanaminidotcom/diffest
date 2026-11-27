@@ -24,6 +24,7 @@ interface PatchSummary {
 
 interface ParsedPatch {
   hunks: Hunk[];
+  modeLines: string[];
   summary: PatchSummary;
   tooManyLines: boolean;
 }
@@ -33,6 +34,7 @@ const maxStructuredLines = 5000;
 
 function scanPatch(patch: string, render: boolean): ParsedPatch {
   const hunks: Hunk[] = [];
+  const modeLines: string[] = [];
   const lines = patch.replace(/\n$/u, "").split("\n");
   const summary: PatchSummary = {
     added    : 0,
@@ -60,7 +62,10 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
     }
     if (line.startsWith("diff --")) inHunk = false;
 
-    if (!inHunk) continue;
+    if (!inHunk) {
+      if (collectHunks && /^(?:old|new) mode [0-7]{6}$/u.test(line)) modeLines.push(line);
+      continue;
+    }
 
     const marker = line.charAt(0);
     if (marker === "-") summary.removed++;
@@ -104,6 +109,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
         hunks.length = 0;
         return {
           hunks,
+          modeLines,
           summary,
           tooManyLines,
         };
@@ -112,6 +118,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
   }
   return {
     hunks,
+    modeLines,
     summary,
     tooManyLines,
   };
