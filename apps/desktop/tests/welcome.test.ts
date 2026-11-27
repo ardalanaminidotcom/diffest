@@ -593,7 +593,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   });
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe(staged.patch);
-    expect(element(target, "#changed-files").hidden).toBe(false);
+    expect(element(target, "#changed-files").inert).toBe(false);
   });
   expect(element(target, files).textContent).toContain("Staged");
   const unstagedEntry = element(target, `${ files }:nth-of-type(2)`);
@@ -655,9 +655,9 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     expect(target.querySelector("pre")?.textContent).toBe(refreshedConflict.patch);
   });
   expect(element(target, "#projects").hidden).toBe(false);
-  element(target, "[aria-label='Collapse file list']").click();
+  element(target, ".app-bar [aria-controls=changed-files]").click();
   flushSync();
-  expect(element(target, "#changed-files").hidden).toBe(true);
+  expect(element(target, "#changed-files").inert).toBe(true);
   element(target, "aside ul li:nth-child(2) button").click();
   await vi.waitFor(() => {
     expect(target.textContent).toContain("No uncommitted changes.");
@@ -666,7 +666,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   expect(commands).toHaveBeenLastCalledWith("open_worktree_review", { checkout: linked.path });
   element(target, worktree).click();
   await vi.waitFor(() => {
-    expect(element(target, "#changed-files").hidden).toBe(false);
+    expect(element(target, "#changed-files").inert).toBe(false);
     expect(target.querySelector("pre")?.textContent).toBe(staged.patch);
   });
 });
@@ -780,13 +780,19 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   ]);
   expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
   expect(element(target, "[aria-label='Changed files'] [aria-pressed=true]").textContent).toContain(file.path);
-  element(target, "[aria-controls='changed-files']").click();
+  const filesToggle = ".app-bar [aria-controls=changed-files]";
+  const filesButton = element(target, filesToggle);
+  filesButton.click();
   flushSync();
-  expect(element(target, "#changed-files").hidden).toBe(true);
+  expect(element(target, "#changed-files").inert).toBe(true);
+  expect(filesButton.getAttribute("aria-expanded")).toBe("false");
+  expect(target.querySelector(".file-header [aria-controls=changed-files]")).toBeNull();
   expect(target.querySelector(split)).toBeTruthy();
-  element(target, "[aria-controls='changed-files']").click();
+  expect(element(target, filesToggle)).toBe(filesButton);
+  filesButton.click();
   flushSync();
-  expect(element(target, "#changed-files").hidden).toBe(false);
+  expect(element(target, "#changed-files").inert).toBe(false);
+  expect(filesButton.getAttribute("aria-expanded")).toBe("true");
   expect(layoutCommands).toHaveBeenLastCalledWith("set_review_layout", {
     checkout: main.path,
     id      : null,
