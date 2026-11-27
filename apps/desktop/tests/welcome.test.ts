@@ -236,6 +236,10 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
     expect(source.textContent).toContain("+2");
     expect(source.textContent).toContain("−2");
   });
+  const totalsSelector = "#changed-files header [aria-label='Total lines added 3, lines removed 3']";
+  const totals = element(target, totalsSelector);
+  expect(totals.textContent).toContain("+3");
+  expect(totals.textContent).toContain("−3");
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
   expect(target.textContent).not.toContain("@@");
 
@@ -249,6 +253,7 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
   expect(testCategory.parentElement?.hasAttribute("open")).toBe(false);
   expect(testCategory.textContent).toContain("+1");
   expect(testCategory.textContent).toContain("−1");
+  expect(element(target, totalsSelector)).toBe(totals);
   testCategory.click();
   expect(file.querySelector("[aria-label='Unified patch']")).toBeNull();
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(2);

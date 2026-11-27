@@ -111,6 +111,13 @@ let fileStream: HTMLElement | undefined = $state();
 const activeProject = $derived(projects.find(project => project.id === activeProjectId));
 const activeBranch = $derived(activeProject?.worktrees.find(worktree => worktree.path === activeCheckout)?.branch);
 const patchSummaries = $derived(files.map(file => summarizePatch(file.patch)));
+const lineTotals = $derived(patchSummaries.reduce((totals, patch) => ({
+  added  : totals.added + patch.added,
+  removed: totals.removed + patch.removed,
+}), {
+  added  : 0,
+  removed: 0,
+}));
 const mountedRowLimit = 20_000;
 const windowRows = $derived(patchSummaries.reduce((rows, patch) => rows + patch.lineCount, 0) > mountedRowLimit);
 const reviewedWorktreeCount = $derived(worktreeReview?.filter(patch => patch.reviewed).length);
@@ -606,7 +613,16 @@ function stageWorktreePatch(patch: WorktreePatch): void {
         <div class="files-column">
           <aside id="changed-files" class="file-list" aria-label="File sidebar" inert={filesCollapsed}>
             <header class="file-list-header">
-              <strong class="file-list-title">Files <span>{files.length}</span></strong>
+              <div class="file-list-heading">
+                <strong class="file-list-title">Files <span>{files.length}</span></strong>
+                {#if lineTotals.added || lineTotals.removed}
+                  <span class="line-counts" role="group"
+                    aria-label={`Total lines added ${ lineTotals.added }, lines removed ${ lineTotals.removed }`}>
+                    {#if lineTotals.added}<span class="additions" aria-hidden="true">+{lineTotals.added}</span>{/if}
+                    {#if lineTotals.removed}<span class="deletions" aria-hidden="true">−{lineTotals.removed}</span>{/if}
+                  </span>
+                {/if}
+              </div>
               <p id="review-progress" role="status">{reviewStatus(files.length, reviewedFileCount)}</p>
               <progress aria-label="Review progress" value={reviewedFileCount} max={files.length}></progress>
             </header>
@@ -866,6 +882,7 @@ button[aria-pressed="true"] {
   padding: 0.7rem 0.8rem 0.4rem;
   background: var(--surface);
 }
+.file-list-heading { display: flex; align-items: center; gap: 0.4rem; }
 .file-list-title span, #review-progress { color: var(--muted); font-weight: 400; }
 #review-progress { font-size: 0.8rem; }
 progress {
