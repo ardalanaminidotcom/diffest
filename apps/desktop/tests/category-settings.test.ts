@@ -1,0 +1,325 @@
+import { invoke } from "@tauri-apps/api/core";
+import { flushSync, mount, unmount } from "svelte";
+import { expect, it, onTestFinished, vi } from "vitest";
+import CategorySettings from "../src/lib/category-settings.svelte";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+const globalPath = "/home/demo/.diffest/settings.json";
+const projectPath = "/repos/main/.diffest/settings.json";
+const rules = [
+  {
+    glob       : "**/*.rs",
+    category   : "Rust",
+    subcategory: null,
+  },
+  {
+    glob       : "**/tests/**",
+    category   : "Tests",
+    subcategory: "Unit",
+  },
+] as const;
+
+function render(): HTMLDivElement {
+  const target = document.createElement("div");
+  document.body.append(target);
+  const settings = mount(CategorySettings, {
+    target,
+    props: {
+      projects: [
+        {
+          id           : 1,
+          name         : "demo",
+          mainCheckout : "/repos/main",
+          worktrees    : [],
+          worktreeError: null,
+        },
+      ],
+      drafts : {},
+      onback : vi.fn(),
+      onsaved: vi.fn().mockResolvedValue(null),
+    },
+  });
+  onTestFinished(async () => {
+    await unmount(settings);
+    target.remove();
+  });
+  flushSync();
+  return target;
+}
+
+function button(target: HTMLElement, label: string): HTMLButtonElement {
+  const result = [...target.querySelectorAll("button")]
+    .find(item => item.textContent.trim() === label || item.getAttribute("aria-label") === label);
+  if (!result) throw new Error(`Missing button ${ label }`);
+
+  return result;
+}
+
+it("copies inherited rules, reorders them, and keeps the draft when a save conflicts", async () => {
+  const read = {
+    global: {
+      path   : globalPath,
+      version: "global",
+      error  : null,
+      custom : true,
+      rules,
+    },
+    project: {
+      path   : projectPath,
+      version: "original",
+      error  : null,
+      custom : false,
+      rules,
+    },
+    categories: [],
+  };
+  const commands = vi.fn()
+    .mockReset()
+    .mockResolvedValueOnce(read)
+    .mockResolvedValueOnce(read)
+    .mockRejectedValueOnce(`${ projectPath }: Settings changed on disk. Reload before saving.`)
+    .mockResolvedValue({
+      ...read,
+      project: {
+        ...read.project,
+        version: "external",
+        custom : true,
+      },
+    });
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
+
+  const target = render();
+  const picker = target.querySelector<HTMLSelectElement>("select");
+  if (!picker) throw new Error("Missing scope picker");
+  picker.value = "1";
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  const form = await vi.waitFor(() => {
+    const projectForm = target.querySelector<HTMLFormElement>("form[aria-label='Project category rules']");
+    expect(projectForm).toBeTruthy();
+    return projectForm!;
+  });
+  expect(form.textContent).toContain(projectPath);
+  expect(form.textContent).toContain("Inherited from Global");
+  button(form, "Customize rules").click();
+  flushSync();
+  expect(form.querySelector<HTMLInputElement>("input[name='glob']")?.value).toBe("**/*.rs");
+  button(form, "Move rule 2 up").click();
+  flushSync();
+  button(form, "Save rules").click();
+  await vi.waitFor(() => {
+    expect(form.querySelector("[role='alert']")?.textContent).toContain("Settings changed on disk");
+  });
+  expect(invoke).toHaveBeenCalledWith("save_category_settings", {
+    mainCheckout: "/repos/main",
+    version     : "original",
+    rules       : rules.toReversed(),
+  });
+  expect(form.querySelector<HTMLInputElement>("input[name='glob']")?.value).toBe("**/tests/**");
+
+  globalThis.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => {
+    expect(form.textContent).toContain("Discard edits to load the file");
+  });
+  expect(button(form, "Save rules").disabled).toBe(true);
+  button(form, "Discard edits").click();
+  flushSync();
+  expect(form.textContent).toContain("Custom rules");
+});
+
+it("saves new global category and subcategory labels and resets to the built-in rules", async () => {
+  const inherited = {
+    global: {
+      path   : globalPath,
+      version: "missing",
+      error  : null,
+      custom : false,
+      rules,
+    },
+    project   : null,
+    categories: [],
+  };
+  const customRule = {
+    glob       : "**/fixtures/**",
+    category   : "Fixtures",
+    subcategory: "Golden",
+  };
+  const commands = vi.fn()
+    .mockReset()
+    .mockResolvedValueOnce(inherited)
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce({
+      ...inherited,
+      global: {
+        ...inherited.global,
+        version: "custom",
+        custom : true,
+        rules  : [rules[1], customRule],
+      },
+    })
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(inherited)
+    .mockResolvedValueOnce({
+      ...inherited,
+      global: {
+        ...inherited.global,
+        error: `${ globalPath }: Rule 1: invalid glob`,
+      },
+    })
+    .mockResolvedValue(inherited);
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
+
+  const target = render();
+  button(target, "File categories").click();
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain("Built-in rules");
+  });
+  button(target, "Customize rules").click();
+  flushSync();
+  button(target, "Remove rule").click();
+  button(target, "General").click();
+  flushSync();
+  button(target, "File categories").click();
+  flushSync();
+  expect(target.querySelectorAll("ol li")).toHaveLength(1);
+  expect(target.querySelector("ol li")?.textContent).toContain("Tests");
+  expect(target.querySelectorAll("ol li input")).toHaveLength(2);
+  button(target, "Add rule").click();
+  flushSync();
+  const values = [customRule.category, customRule.glob, customRule.subcategory];
+  const inputs = [...target.querySelectorAll<HTMLInputElement>("ol li:last-child input")];
+  expect(inputs).toHaveLength(values.length);
+  for (const [index, field] of inputs.entries()) {
+    field.value = values[index] ?? "";
+    field.dispatchEvent(new Event(index === 0 ? "change" : "input", { bubbles: true }));
+  }
+  flushSync();
+  button(target, "Save rules").click();
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain("Custom rules");
+  });
+  expect(invoke).toHaveBeenCalledWith("save_category_settings", {
+    mainCheckout: null,
+    version     : "missing",
+    rules       : [rules[1], customRule],
+  });
+  button(target, "Reset to built-in rules").click();
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain("Built-in rules");
+  });
+  expect(invoke).toHaveBeenCalledWith("save_category_settings", {
+    mainCheckout: null,
+    version     : "custom",
+    rules       : null,
+  });
+
+  globalThis.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => {
+    expect(target.querySelector("[role='alert']")?.textContent).toContain(globalPath);
+    expect(target.querySelector("[role='alert']")?.textContent).toContain("invalid glob");
+  });
+  globalThis.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => {
+    expect(target.querySelector("[role='alert']")).toBeNull();
+  });
+});
+
+it("groups adjacent category rules without moving rules across an intervening category", async () => {
+  const ordered = [
+    rules[0],
+    {
+      ...rules[0],
+      glob: "**/*.toml",
+    },
+    rules[1],
+    {
+      ...rules[0],
+      glob: "**/*.lock",
+    },
+  ];
+  const snapshot = {
+    global: {
+      path   : globalPath,
+      version: "global",
+      error  : null,
+      custom : true,
+      rules  : ordered,
+    },
+    project   : null,
+    categories: [],
+  };
+  const commands = vi.fn()
+    .mockResolvedValueOnce(snapshot)
+    .mockResolvedValueOnce(null)
+    .mockResolvedValue(snapshot);
+
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
+  const target = render();
+  button(target, "File categories").click();
+  const form = await vi.waitFor(() => {
+    const categoryForm = target.querySelector("form");
+    if (!categoryForm) throw new Error("Missing category rules");
+    return categoryForm;
+  });
+  expect([...form.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual(["Rust", "Tests", "Rust"]);
+  const displayedPatterns = [...form.querySelectorAll("ul code")].map(pattern => pattern.textContent);
+  expect(displayedPatterns).toEqual(ordered.map(rule => rule.glob));
+
+  button(form, "Edit rules").click();
+  flushSync();
+  const name = form.querySelector<HTMLInputElement>("input[required]");
+  if (!name) throw new Error("Missing category name");
+  name.value = "Tests";
+  name.dispatchEvent(new Event("input", { bubbles: true }));
+  flushSync();
+  expect(form.querySelectorAll(".category-name input")).toHaveLength(2);
+  name.value = "Implementation";
+  name.dispatchEvent(new Event("change", { bubbles: true }));
+  flushSync();
+  const secondRule = form.querySelector("ol > li:nth-child(2)");
+  if (!(secondRule instanceof HTMLElement)) throw new TypeError("Missing second rule");
+  button(secondRule, "Change category").click();
+  flushSync();
+  const separateName = secondRule.querySelector<HTMLInputElement>(".category-name input");
+  if (!separateName) throw new Error("Missing separate category name");
+  separateName.value = "Config";
+  separateName.dispatchEvent(new Event("change", { bubbles: true }));
+  button(form, "Save rules").click();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_category_settings", {
+    mainCheckout: null,
+    version     : "global",
+    rules       : [
+      {
+        ...ordered[0],
+        category: "Implementation",
+      },
+      {
+        ...ordered[1],
+        category: "Config",
+      },
+      ordered[2],
+      ordered[3],
+    ],
+  }));
+});
