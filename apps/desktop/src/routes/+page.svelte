@@ -327,7 +327,6 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 
 <main>
   <header class="app-bar">
-    <h1><svg aria-hidden="true" viewBox="0 0 18 18" fill="none"><rect x="1.5" y="1.5" width="15" height="15" rx="3" /><path d="M6 7h6M9 4v6m-3 3h6" /></svg>Diffest</h1>
     {#if activeProject}
       <span class="project-name">{activeProject.name}</span>
       <span class="branch" title={activeCheckout}>{activeBranch ?? "Detached HEAD"}</span>
@@ -409,6 +408,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
         {/each}
       </div>
       <footer class="project-footer">
+        <h1><svg aria-hidden="true" viewBox="0 0 18 18" fill="none"><rect x="1.5" y="1.5" width="15" height="15" rx="3" /><path d="M6 7h6M9 4v6m-3 3h6" /></svg>Diffest</h1>
         <CategorySettings {mainCheckout} {paths} bind:categories bind:defaultLayout />
       </footer>
     </aside>
@@ -669,7 +669,7 @@ main { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100dvh; }
   background: var(--toolbar);
 }
 h1, h2, h3, p { margin: 0; }
-h1 { display: flex; align-items: center; gap: 0.45rem; margin-inline-end: 0.35rem; font-size: 1rem; }
+h1 { display: flex; align-items: center; gap: 0.45rem; font-size: 1rem; }
 h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1.4; }
 .project-name { color: var(--muted); overflow-wrap: anywhere; }
 .branch { max-width: min(18rem, 75vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -715,7 +715,16 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
 .project-list { overflow: auto; padding: 0.35rem 0.65rem; }
 .project-list summary { padding: 0.4rem 0.2rem; cursor: pointer; font-weight: 650; overflow-wrap: anywhere; }
 .project-list summary:hover { background: var(--toolbar); }
-.project-footer { position: relative; z-index: 2; border-block-start: 1px solid var(--border); padding: 0.55rem 0.85rem; }
+.project-footer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  border-block-start: 1px solid var(--border);
+  padding: 0.55rem 0.85rem;
+}
 .panel-label {
   display: flex;
   align-items: center;

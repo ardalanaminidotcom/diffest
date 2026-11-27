@@ -153,7 +153,7 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
 
   const target = render();
   const addCheckout = "#projects button[aria-label='Add checkout']";
-  expect(target.querySelector("main h1")?.textContent).toBe("Diffest");
+  expect(target.querySelector("#projects footer h1")?.textContent).toBe("Diffest");
   await vi.waitFor(() => {
     expect(target.querySelector<HTMLButtonElement>(addCheckout)?.disabled).toBe(false);
   });
@@ -813,7 +813,7 @@ it("applies global layout changes to an inherited review and reopens an explicit
   element(target, "#save-review").click();
   const saved = "[aria-label='Saved commit reviews'] button";
   await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
-  element(target, ".category-settings > summary").click();
+  element(target, "#projects footer summary[title=Settings]").click();
   const select = target.querySelector<HTMLSelectElement>("#default-diff-layout");
   if (!select) throw new Error("Missing default diff layout");
   expect(select.value).toBe("unified");
