@@ -55,12 +55,22 @@ interface ComparisonOptions {
   refresh?: ReviewSelection | null;
 }
 
+interface CategorizedFiles {
+  checkout: string | null;
+  paths: string[];
+  categories: FileCategory[];
+}
+
 interface ReviewPosition {
   file: HTMLElement;
   offset: number;
   selectedIndex: number;
 }
 /* eslint-enable @stylistic/key-spacing */
+
+function samePaths(first: string[], second: string[]): boolean {
+  return first.length === second.length && first.every((path, index) => path === second[index]);
+}
 
 let projects = $state<Project[]>([]);
 let activeCheckout = $state("");
@@ -83,8 +93,11 @@ let reviewSession = $state(0);
 let files = $derived(worktreeReview ?? comparison?.files ?? []);
 let mainCheckout = $derived(projects.find(project => project.id === activeProjectId)?.mainCheckout ?? null);
 let paths = $derived(files.map(file => file.path));
-let categories = $state<FileCategory[]>([]);
-const groups = $derived(groupFiles(paths, categories));
+let categorizedFiles = $state.raw<CategorizedFiles>();
+const categories = $derived(categorizedFiles?.checkout === mainCheckout && samePaths(categorizedFiles.paths, paths)
+  ? categorizedFiles.categories
+  : null);
+const groups = $derived(groupFiles(paths, categories ?? []));
 const orderedIndices = $derived([...groups.values()].flatMap(subgroups => [...subgroups.values()].flat()));
 const selectedIndex = $derived(jumpedFileIndex ?? orderedIndices[0] ?? 0);
 const selectedWorktreePatch = $derived(worktreeReview?.[selectedIndex]);
@@ -136,11 +149,22 @@ async function loadReviewSettings(checkout: string | null, filePaths: string[]):
     });
     if (request !== pendingSettingsRead) return;
 
-    categories = settings.categories;
+    categorizedFiles = {
+      checkout,
+      paths     : filePaths,
+      categories: settings.categories,
+    };
     defaultLayout = settings.defaultDiffLayout ?? "unified";
     settingsAnnouncement = [settings.global.error, settings.project?.error].filter(Boolean).join(" ");
   } catch (error_) {
-    if (request === pendingSettingsRead) settingsAnnouncement = String(error_);
+    if (request === pendingSettingsRead) {
+      categorizedFiles = {
+        checkout,
+        paths     : filePaths,
+        categories: categories ?? [],
+      };
+      settingsAnnouncement = String(error_);
+    }
   }
 }
 
@@ -151,12 +175,10 @@ function refreshReviewSettings(): Promise<void> {
 $effect(() => {
   const checkout = mainCheckout;
   const filePaths = paths;
-  if (categorizedCheckout === checkout && categorizedPaths.length === filePaths.length
-    && categorizedPaths.every((path, index) => path === filePaths[index])) return;
+  if (categorizedCheckout === checkout && samePaths(categorizedPaths, filePaths)) return;
 
   categorizedCheckout = checkout;
   categorizedPaths = filePaths;
-  categories = [];
   void loadReviewSettings(checkout, filePaths);
 });
 
@@ -604,6 +626,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
             {#each orderedIndices as index (worktreeReview?.[index]?.fingerprint ?? index)}
               {@const patch = worktreeReview?.[index]}
               <ReviewFile {index} file={files[index]} {patch} checkout={activeCheckout} {comparison} {layout} busy={busy || comparisonUpdate === "branch_deleted"}
+                category={categories === null ? null : categories[index]?.category}
                 {windowRows}
                 reviewed={patch?.reviewed ?? reviewedFiles.has(index)}
                 onreview={() => toggleFileReviewed(index)} onstage={stageWorktreePatch} />

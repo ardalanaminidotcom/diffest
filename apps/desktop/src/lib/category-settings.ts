@@ -33,6 +33,9 @@ interface Categorization {
 
 type FileGroups = Map<string, Map<string | null, number[]>>;
 
+const generatedCategory = "Generated";
+const builtInCategories: ReadonlySet<string> = new Set([generatedCategory, "Tests", "Docs", "Source"]);
+
 function groupFiles(paths: string[], categories: FileCategory[]): FileGroups {
   const groups: FileGroups = new Map();
   for (const [index] of paths.entries()) {
@@ -47,5 +50,5 @@ function groupFiles(paths: string[], categories: FileCategory[]): FileGroups {
   return groups;
 }
 
-export { groupFiles };
+export { builtInCategories, generatedCategory, groupFiles };
 export type { Categorization, CategoryRule, CategoryRuleDraft, FileCategory, FileGroups, RuleSettings };

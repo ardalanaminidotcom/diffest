@@ -3,6 +3,7 @@
 import type { ChangedFile, Comparison, DiffLayout, WorktreePatch } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { untrack } from "svelte";
+import { generatedCategory } from "./category-settings.js";
 import DiffView from "./diff-view.svelte";
 import {
   type FileDetails,
@@ -22,6 +23,7 @@ interface Properties {
   comparison: Comparison | null;
   layout: DiffLayout;
   windowRows: boolean;
+  category?: string | null;
   reviewed: boolean | null;
   busy: boolean;
   onreview(): void;
@@ -29,10 +31,17 @@ interface Properties {
 }
 
 let {
-  index, file, patch, checkout, comparison, layout, windowRows, reviewed, busy, onreview, onstage,
+  index, file, patch, checkout, comparison, layout, windowRows, category, reviewed, busy, onreview, onstage,
 }: Properties = $props();
 const isReviewed = $derived(reviewed === true);
-let expanded = $derived(!isReviewed);
+const generated = $derived(category === generatedCategory);
+let expansionOverride = $state<boolean | null>(null);
+const expanded = $derived(category !== null && (expansionOverride ?? (!generated && !isReviewed)));
+let wasReviewed = false;
+$effect.pre(() => {
+  if (wasReviewed !== isReviewed) expansionOverride = isReviewed ? null : true;
+  wasReviewed = isReviewed;
+});
 const name = $derived(fileName(file.path));
 let section: HTMLElement | undefined = $state();
 let preview: HTMLDivElement | undefined = $state();
@@ -92,7 +101,7 @@ $effect(() => {
 
 // Each section is keyed to its patch or comparison file, so cached sizes survive review mark changes.
 $effect(() => {
-  if (!nearViewport) return;
+  if (!nearViewport || category === null) return;
   const loadPreviews = expanded;
   if (untrack(() => details && (!loadPreviews || !previewsDiscarded))) return;
 
@@ -157,7 +166,7 @@ $effect(() => {
       <div class="file-title">
         <h2 id={`file-name-${ index }`}>
           <button type="button" aria-controls={`file-content-${ index }`} aria-expanded={expanded}
-            title={file.path} onclick={() => expanded = !expanded}>
+            title={file.path} onclick={() => expansionOverride = !expanded}>
             <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m6 4 4 4-4 4" /></svg>
             <span>{name}</span>
           </button>
@@ -175,6 +184,7 @@ $effect(() => {
         </p>
       {/if}
     </div>
+    {#if generated}<span class="patch-side">{generatedCategory}</span>{/if}
     {#if patch}<span class="patch-side">{patch.side === "staged" ? "Staged" : "Unstaged"}</span>{/if}
     {#if file.status === "U"}<span class="patch-side deletions">Conflicted</span>{/if}
     {#if patch?.side === "unstaged"}

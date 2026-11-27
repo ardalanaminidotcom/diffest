@@ -1,7 +1,12 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
-import type { CategoryRule, CategoryRuleDraft, RuleSettings } from "./category-settings.js";
 import { tick, untrack } from "svelte";
+import {
+  type CategoryRule,
+  type CategoryRuleDraft,
+  type RuleSettings,
+  builtInCategories,
+} from "./category-settings.js";
 
 interface Properties {
   scope: string;
@@ -69,7 +74,7 @@ function move(index: number, destination: number): void {
 }
 
 function renameCategory(index: number, name: string): void {
-  if (!draft) return;
+  if (!draft || builtInCategories.has(draft.rules[index].category)) return;
 
   const first = draft.rules[index];
   const category = first.category;
@@ -84,7 +89,7 @@ function renameCategory(index: number, name: string): void {
 }
 
 async function changeRuleCategory(index: number): Promise<void> {
-  if (!draft) return;
+  if (!draft || builtInCategories.has(draft.rules[index].category)) return;
 
   draft.rules[index].category = "";
   await tick();
@@ -138,13 +143,19 @@ function submit(event: SubmitEvent): void {
   {#if draft}
     <fieldset disabled={saving}>
       <legend>Rules in match order</legend>
+      <datalist id="built-in-category-names">
+        {#each builtInCategories as name (name)}<option value={name}></option>{/each}
+      </datalist>
       <ol>
         {#each draft.rules as rule, index (index)}
           {@const startsCategory = !rule.category || draft.rules[index - 1]?.category !== rule.category}
+          {@const builtIn = builtInCategories.has(rule.category)}
           <li class:category-start={startsCategory}>
-            {#if startsCategory}
+            {#if startsCategory && builtIn}
+              <p class="category-name"><strong>{rule.category}</strong> <small>Built-in</small></p>
+            {:else if startsCategory}
               <label class="category-name">Category
-                <input value={rule.category} required
+                <input value={rule.category} list="built-in-category-names" required
                   onchange={(event) => renameCategory(index, event.currentTarget.value)}
                   onkeydown={(event) => {
                     if (event.key === "Enter") event.currentTarget.blur();
@@ -154,7 +165,7 @@ function submit(event: SubmitEvent): void {
             <label>Glob <input name="glob" bind:value={rule.glob} required /></label>
             <label>Subcategory <input bind:value={rule.subcategory} /></label>
             <div class="order">
-              {#if rule.category && (draft.rules[index - 1]?.category === rule.category || draft.rules[index + 1]?.category === rule.category)}
+              {#if !builtIn && rule.category && (draft.rules[index - 1]?.category === rule.category || draft.rules[index + 1]?.category === rule.category)}
                 <button type="button" onclick={() => changeRuleCategory(index)}>Change category</button>
               {/if}
               <button
@@ -237,7 +248,8 @@ ol { padding-inline-start: 1.5rem; }
 li { margin-block-end: 0.5rem; }
 li > label { width: 32%; box-sizing: border-box; padding-inline-end: 0.35rem; overflow-wrap: anywhere; }
 .category-start:not(:first-child) { padding-block-start: 0.55rem; border-block-start: 1px solid var(--border); }
-li > .category-name { display: block; margin-block-end: 0.35rem; }
+li > .category-name { display: block; margin-block: 0 0.35rem; }
+.category-name small { margin-inline-start: 0.25rem; color: var(--muted); }
 .order { margin-block-start: 0.35rem; }
 label, .order { display: inline-block; font-size: 0.8rem; }
 input { display: block; width: 100%; }

@@ -12,10 +12,12 @@ it("renders on the client for Tauri's static frontend", () => {
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const revisionCommands = vi.fn();
+const fixtureCategories = new Map<unknown, string>([["after.txt", "Tests"], ["pnpm-lock.yaml", "Generated"]]);
 const layoutCommands = vi.fn();
 const NativeIntersectionObserver = globalThis.IntersectionObserver;
 const fileVisibility = new WeakMap<Element, (nearViewport: boolean) => void>();
 let defaultDiffLayout = "unified";
+let pendingCategorization = Promise.resolve(null);
 const comparisonStatus = vi.fn();
 let loadWorktreePatches = false;
 beforeEach(() => {
@@ -52,6 +54,7 @@ beforeEach(() => {
   revisionCommands.mockReset();
   layoutCommands.mockReset().mockResolvedValue(null);
   defaultDiffLayout = "unified";
+  pendingCategorization = Promise.resolve(null);
   comparisonStatus.mockReset().mockResolvedValue("current");
   const retention = new Map<unknown, number>([[null, 7]]);
   loadWorktreePatches = false;
@@ -116,6 +119,7 @@ beforeEach(() => {
 
     const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
     const paths: unknown[] = Array.isArray(filePaths) ? filePaths : [];
+    if (paths.includes("pnpm-lock.yaml")) await pendingCategorization;
     return {
       global: {
         path   : "/home/demo/.diffest/settings.json",
@@ -127,7 +131,7 @@ beforeEach(() => {
       defaultDiffLayout,
       project   : null,
       categories: paths.map(path => ({
-        category   : path === "after.txt" ? "Tests" : "Source",
+        category   : fixtureCategories.get(path) ?? "Source",
         subcategory: path === "after.txt" ? "Unit" : null,
       })),
     };
@@ -196,6 +200,38 @@ const revisions = {
     },
   ],
 };
+
+it("starts generated diffs collapsed and keeps their review checkbox independent", async () => {
+  const patch = {
+    path        : "pnpm-lock.yaml",
+    status      : "M",
+    previousPath: null,
+    patch       : "@@ -1 +1 @@\n-old\n+new\n",
+    side        : "unstaged",
+    fingerprint : "lockfile",
+    reviewed    : false,
+  };
+  revisionCommands.mockResolvedValueOnce([project]).mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([patch]);
+  loadWorktreePatches = true;
+  const categorization = Promise.withResolvers<null>();
+  pendingCategorization = categorization.promise;
+  const target = render();
+  const worktree = await vi.waitFor(() => element(target, "aside ul button"));
+  worktree.click();
+
+  const file = await vi.waitFor(() => element(target, "#file-review-0"));
+  const diff = "[aria-label='Unified patch']";
+  expect(file.querySelector(diff)).toBeNull();
+  categorization.resolve(null);
+  await vi.waitFor(() => expect(file.textContent).toContain("Generated"));
+  const toggle = element(file, "h2 button");
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(file.querySelector(diff)).toBeNull();
+  toggle.click();
+  await vi.waitFor(() => expect(file.querySelector(diff)?.textContent).toContain("new"));
+  expect(file.querySelector<HTMLInputElement>("input[type=checkbox]")?.checked).toBe(false);
+});
 
 it("reviews a continuous file stream in sidebar order and jumps to a collapsed file", async () => {
   const patches = ["one.txt", "after.txt", "two.txt"].map(path => ({

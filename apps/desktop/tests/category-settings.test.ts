@@ -87,12 +87,12 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
         custom : true,
       },
     });
-  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
+  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
     ? Promise.resolve({
         days        : 7,
         overrideDays: null,
       })
-    : commands(command, parameters));
+    : commands(command, parameters)));
 
   const target = render();
   const picker = target.querySelector<HTMLSelectElement>("select");
@@ -172,12 +172,12 @@ it("saves new global category and subcategory labels and resets to the built-in 
       },
     })
     .mockResolvedValue(inherited);
-  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
+  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
     ? Promise.resolve({
         days        : 7,
         overrideDays: null,
       })
-    : commands(command, parameters));
+    : commands(command, parameters)));
 
   const target = render();
   button(target, "File categories").click();
@@ -192,6 +192,8 @@ it("saves new global category and subcategory labels and resets to the built-in 
   button(target, "File categories").click();
   flushSync();
   expect(target.querySelectorAll("ol li")).toHaveLength(1);
+  expect(target.querySelector("ol li")?.textContent).toContain("Tests");
+  expect(target.querySelectorAll("ol li input")).toHaveLength(2);
   button(target, "Add rule").click();
   flushSync();
   const values = [customRule.category, customRule.glob, customRule.subcategory];
@@ -261,12 +263,12 @@ it("groups adjacent category rules without moving rules across an intervening ca
     .mockResolvedValueOnce(null)
     .mockResolvedValue(snapshot);
 
-  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
+  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
     ? Promise.resolve({
         days        : 7,
         overrideDays: null,
       })
-    : commands(command, parameters)));
+    : commands(command, parameters));
   const target = render();
   button(target, "File categories").click();
   const form = await vi.waitFor(() => {
@@ -285,8 +287,8 @@ it("groups adjacent category rules without moving rules across an intervening ca
   name.value = "Tests";
   name.dispatchEvent(new Event("input", { bubbles: true }));
   flushSync();
-  expect(form.querySelectorAll(".category-name input")).toHaveLength(3);
-  name.value = "Source";
+  expect(form.querySelectorAll(".category-name input")).toHaveLength(2);
+  name.value = "Implementation";
   name.dispatchEvent(new Event("change", { bubbles: true }));
   flushSync();
   const secondRule = form.querySelector("ol > li:nth-child(2)");
@@ -304,7 +306,7 @@ it("groups adjacent category rules without moving rules across an intervening ca
     rules       : [
       {
         ...ordered[0],
-        category: "Source",
+        category: "Implementation",
       },
       {
         ...ordered[1],
