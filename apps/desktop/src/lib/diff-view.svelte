@@ -24,7 +24,6 @@ function languageFor(filename: string): string {
 
 let { patch, path, previousPath, layout }: Properties = $props();
 const parsed = $derived(parsePatch(patch));
-const metadata = $derived(parsed.headers.join("\n").trimEnd());
 const beforeLanguage = $derived(languageFor(previousPath ?? path));
 const afterLanguage = $derived(languageFor(path));
 
@@ -80,9 +79,6 @@ function highlight(text: string, language: string): string | null {
       {/each}
     </tbody>
   </table>
-  {#if metadata}
-    <details><summary>Patch headers</summary><pre>{metadata}</pre></details>
-  {/if}
 {:else}
   {#if patch}
     {#if parsed.tooManyLines}<p class="raw-notice">Large patch · Showing raw text</p>{/if}
@@ -123,10 +119,7 @@ code { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 
 .added > .line-number:first-child, .line-number.added { box-shadow: inset 1px 0 var(--added-ink); }
 .removed > .line-number:first-child, .line-number.removed { box-shadow: inset 1px 0 var(--removed-ink); }
 .blank { background: var(--surface); }
-details { padding: 0.55rem 0.75rem; border-block-start: 1px solid var(--border); color: var(--muted); }
-summary { cursor: pointer; }
 pre { margin: 0; padding: 0.75rem; overflow: auto; }
-details pre { padding-inline: 0; }
 .raw-notice { margin: 0; padding: 0.35rem 0.75rem; color: var(--muted); background: var(--surface); }
 code :global(.hljs-keyword), code :global(.hljs-selector-tag), code :global(.hljs-literal) { color: var(--syntax-keyword); }
 code :global(.hljs-title), code :global(.hljs-tag), code :global(.hljs-attr), code :global(.hljs-built_in) { color: var(--syntax-name); }

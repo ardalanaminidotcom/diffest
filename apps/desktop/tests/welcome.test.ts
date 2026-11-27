@@ -26,6 +26,33 @@ beforeEach(() => {
       return null;
     }
     if (command === "read_file_details") {
+      const source = parameters && "source" in parameters ? parameters.source : null;
+      if (source && typeof source === "object" && "path" in source) {
+        if (source.path === "mode.png") {
+          const image = {
+            path    : "mode.png",
+            format  : "PNG",
+            byteSize: 48,
+            preview : "data:image/png;base64,iVBORw0KGgo=",
+          };
+          return {
+            before: image,
+            after : image,
+          };
+        }
+        if (source.path === "new.txt") {
+          return {
+            before: null,
+            after : { byteSize: 1432 },
+          };
+        }
+        if (source.path === "after.txt") {
+          return {
+            before: { byteSize: 440 },
+            after : { byteSize: 120 },
+          };
+        }
+      }
       return {
         before: null,
         after : null,
@@ -190,6 +217,8 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
   element(target, "#compare button").click();
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe("+new content\n");
+    expect(target.querySelector(".file-title .size-change.additions")?.textContent.trim()).toBe("+1.4 KB");
+    expect(target.querySelector("#changed-files .size-change")).toBeNull();
   });
   expect(commands).toHaveBeenCalledWith("compare_revisions", {
     checkout: main.path,
@@ -208,6 +237,10 @@ it("opens the added checkout, switches worktrees, and renders the selected unifi
   rename.click();
   flushSync();
   expect(target.querySelector("pre")?.textContent).toBe("-old\n+new\n");
+  expect(target.querySelector(".size-change")).toBeNull();
+  await vi.waitFor(() => {
+    expect(target.querySelector(".file-title .size-change.deletions")?.textContent.trim()).toBe("−320 B");
+  });
   await vi.waitFor(() => {
     expect(invoke).toHaveBeenCalledWith("read_file_details", {
       checkout: main.path,
@@ -413,7 +446,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     checkout: linked.path,
     id      : 7,
   });
-  expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
   expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
 
   element(target, `${ file }:nth-of-type(2)`).click();
@@ -527,6 +560,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce([staged, unstaged])
+    .mockRejectedValueOnce("Unable to save the review mark.")
     .mockResolvedValueOnce([
       staged,
       {
@@ -579,6 +613,13 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     },
   });
   expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
+  expect(target.querySelector<HTMLInputElement>(".file-title > #review-file")?.checked).toBe(false);
+  element(target, "#review-file").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector("[role='alert']")?.textContent).toBe("Unable to save the review mark.");
+  });
+  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(false);
+  expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
   element(target, "#review-file").click();
   await vi.waitFor(() => {
     expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
@@ -589,6 +630,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     reviewed   : true,
   });
 
+  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
   expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(false);
   element(target, "#stage-file").click();
   await vi.waitFor(() => {
@@ -603,7 +645,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   expect(target.querySelector("pre")?.textContent).toBe("+updated\n");
   element(target, "#review-file").click();
   await vi.waitFor(() => {
-    expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+    expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
   });
   expect(element(target, "#stage-file").hasAttribute("disabled")).toBe(true);
 
@@ -707,6 +749,10 @@ it("shows numbered changes and file counts, and restores the chosen split layout
     expect(element(target, "[aria-label='Changed files'] button").textContent).toContain("+2");
     expect(element(target, "[aria-label='Changed files'] button").textContent).toContain("−2");
   });
+  expect(target.querySelector(".app-bar [aria-label='Diff layout']")).toBeTruthy();
+  expect(target.querySelector("#review-file[type=checkbox]")).toBeTruthy();
+  expect(target.textContent).not.toContain("Patch headers");
+  expect(target.textContent).not.toContain("File details");
   const split = "[aria-label='Split patch']";
   element(target, "[aria-label='Diff layout'] button:last-child").click();
   await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
@@ -720,7 +766,7 @@ it("shows numbered changes and file counts, and restores the chosen split layout
     ["6", "end", "7", "end"],
     ["15", "last\n\\ No newline at end of file", "", ""],
   ]);
-  expect(element(target, "#review-file").textContent).toBe("Clear review mark");
+  expect(target.querySelector<HTMLInputElement>("#review-file")?.checked).toBe(true);
   expect(element(target, "[aria-label='Changed files'] [aria-pressed=true]").textContent).toContain(file.path);
   element(target, "[aria-controls='changed-files']").click();
   flushSync();
@@ -757,6 +803,31 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   flushSync();
   expect(element(target, "[aria-label='Unified patch']").textContent).toBe(largePatch.patch);
   expect(target.querySelector(split)).toBeNull();
+});
+
+it("keeps a mode-only image patch visible alongside its previews", async () => {
+  const file = {
+    status      : "M",
+    path        : "mode.png",
+    previousPath: null,
+    patch       : "diff --git a/mode.png b/mode.png\nold mode 100644\nnew mode 100755\n",
+    side        : "unstaged",
+    fingerprint : "changed-mode",
+    reviewed    : false,
+  };
+  loadWorktreePatches = true;
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce([file]);
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => {
+    expect(target.querySelector(".size-change")?.textContent.trim()).toBe("0 B");
+    expect(target.querySelector("[aria-label='Image comparison'] img")).toBeTruthy();
+  });
+  expect(target.querySelector("pre")?.textContent).toContain("old mode 100644\nnew mode 100755");
 });
 
 it("applies global layout changes to an inherited review and reopens an explicit saved choice", async () => {

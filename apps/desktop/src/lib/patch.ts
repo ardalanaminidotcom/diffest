@@ -24,7 +24,6 @@ interface ChangeCounts {
 
 interface ParsedPatch {
   hunks: Hunk[];
-  headers: string[];
   counts: ChangeCounts;
   tooManyLines: boolean;
 }
@@ -34,7 +33,6 @@ const maxStructuredLines = 5000;
 
 function scanPatch(patch: string, render: boolean): ParsedPatch {
   const hunks: Hunk[] = [];
-  const headers: string[] = [];
   const counts: ChangeCounts = {
     added  : 0,
     removed: 0,
@@ -64,10 +62,7 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
     }
     if (line.startsWith("diff --")) inHunk = false;
 
-    if (!inHunk) {
-      if (collectHunks) headers.push(line);
-      continue;
-    }
+    if (!inHunk) continue;
 
     const marker = line.charAt(0);
     if (marker === "-") counts.removed++;
@@ -111,7 +106,6 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
         hunks.length = 0;
         return {
           hunks,
-          headers,
           counts,
           tooManyLines,
         };
@@ -120,7 +114,6 @@ function scanPatch(patch: string, render: boolean): ParsedPatch {
   }
   return {
     hunks,
-    headers,
     counts,
     tooManyLines,
   };

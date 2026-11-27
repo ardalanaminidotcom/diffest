@@ -14,11 +14,12 @@ import type {
   WorktreePatch,
 } from "../lib/revisions.js";
 import { invoke } from "@tauri-apps/api/core";
-import { onMount, tick } from "svelte";
+import { onMount, tick, untrack } from "svelte";
 import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
 import CategorySettings from "../lib/category-settings.svelte";
 import DiffView from "../lib/diff-view.svelte";
-import FileDetails from "../lib/file-details.svelte";
+import { type FileDetails, type FileDetailsSource, formatSizeChange, isImageVersion } from "../lib/file-details.js";
+import FilePreviews from "../lib/file-previews.svelte";
 import { countChanges } from "../lib/patch.js";
 
 const statusLabels: Record<string, string> = {
@@ -78,8 +79,73 @@ const activeBranch = $derived(activeProject?.worktrees.find(worktree => worktree
 const changeCounts = $derived(files.map(file => countChanges(file.patch)));
 const reviewedWorktreeCount = $derived(worktreeReview?.filter(patch => patch.reviewed).length);
 const reviewedFileCount = $derived(reviewedWorktreeCount ?? review?.summary.reviewedCount);
-const selectedCounts = $derived(changeCounts[selectedIndex]);
-const selectedHasChanges = $derived(Boolean(selectedCounts?.added || selectedCounts?.removed));
+
+const fileReviewed = $derived(selectedWorktreePatch?.reviewed ?? reviewedFiles.has(selectedIndex));
+const selectedFingerprint = $derived(selectedWorktreePatch?.fingerprint);
+const detailsSource = $derived.by((): FileDetailsSource | null => {
+  const fingerprint = selectedFingerprint;
+  if (fingerprint) {
+    // The fingerprint binds the path and both versions, and is unchanged when a review mark changes.
+    const patch = untrack(() => selectedWorktreePatch);
+    if (!patch) return null;
+
+    return {
+      kind             : "worktree",
+      fingerprint      : fingerprint,
+      path             : patch.path,
+      previousPath     : patch.previousPath,
+      pathBytes        : patch.pathBytes ?? null,
+      previousPathBytes: patch.previousPathBytes ?? null,
+    };
+  }
+  if (!comparison || !selectedFile) return null;
+
+  return {
+    kind             : "comparison",
+    start            : comparison.start,
+    end              : comparison.end,
+    path             : selectedFile.path,
+    previousPath     : selectedFile.previousPath,
+    pathBytes        : selectedFile.pathBytes,
+    previousPathBytes: selectedFile.previousPathBytes,
+    status           : selectedFile.status,
+  };
+});
+let details = $state.raw<FileDetails | null>(null);
+let detailsError = $state("");
+const showImagePreviews = $derived(details && (isImageVersion(details.before) || isImageVersion(details.after)));
+const sizeChange = $derived.by(() => {
+  if (!details) return null;
+  if (!details.before && !details.after) return null;
+
+  const before = details.before === null ? 0 : details.before.byteSize;
+  const after = details.after === null ? 0 : details.after.byteSize;
+  return before != null && after != null ? after - before : null;
+});
+
+$effect(() => {
+  const source = detailsSource;
+  details = null;
+  detailsError = "";
+  if (!source) return;
+
+  let current = true;
+  void invoke<FileDetails>("read_file_details", {
+    checkout: activeCheckout,
+    source,
+  }).then(
+    (result) => {
+      if (current) details = result;
+    },
+    // eslint-disable-next-line unicorn/catch-error-name -- File detail errors are separate from workspace errors.
+    (failure: unknown) => {
+      if (current) detailsError = String(failure);
+    },
+  );
+  return () => {
+    current = false;
+  };
+});
 
 async function toggleFiles(): Promise<void> {
   filesCollapsed = !filesCollapsed;
@@ -311,6 +377,12 @@ function markWorktreePatch(patch: WorktreePatch): void {
   });
 }
 
+function toggleFileReviewed(event: MouseEvent): void {
+  event.preventDefault();
+  if (selectedWorktreePatch) markWorktreePatch(selectedWorktreePatch);
+  else if (review && comparison) markFile(review.summary.id, comparison, selectedIndex);
+}
+
 function stageWorktreePatch(patch: WorktreePatch): void {
   void run(async () => {
     const result = await invoke<StageWorktreePatchResult>("stage_worktree_patch", {
@@ -334,6 +406,16 @@ function stageWorktreePatch(patch: WorktreePatch): void {
       <span class="project-name">Local Git review</span>
     {/if}
     <div class="workspace-actions">
+      {#if selectedFile}
+        <div class="diff-layout" role="group" aria-label="Diff layout">
+          <button type="button" aria-pressed={layout === "unified"} onclick={() => switchLayout("unified")} disabled={busy}>
+            Unified
+          </button>
+          <button type="button" aria-pressed={layout === "split"} onclick={() => switchLayout("split")} disabled={busy}>
+            Split
+          </button>
+        </div>
+      {/if}
       {#if projects.some(project => project.savedReviews.length > 0)}
         <details name="workspace-menu" class="toolbar-disclosure saved-reviews" bind:open={savedReviewsOpen}>
           <summary>Saved reviews</summary>
@@ -466,46 +548,36 @@ function stageWorktreePatch(patch: WorktreePatch): void {
                 </button>
               {/if}
               <div class="file-heading" title={selectedFile.path}>
-                <h2>{fileName(selectedFile.path)}</h2>
+                <div class="file-title">
+                  {#if selectedWorktreePatch || review}
+                    <input id="review-file" type="checkbox" checked={fileReviewed} disabled={busy}
+                      aria-label={`Reviewed: ${ fileName(selectedFile.path) }`}
+                      title={fileReviewed ? "Clear review mark" : "Mark as reviewed"} onclick={toggleFileReviewed} />
+                  {/if}
+                  <h2>{fileName(selectedFile.path)}</h2>
+                  {#if sizeChange !== null}
+                    <span class="size-change" class:additions={sizeChange > 0} class:deletions={sizeChange < 0}
+                      title={`Net file size change: ${ formatSizeChange(sizeChange, true) }`}>
+                      {formatSizeChange(sizeChange)}
+                    </span>
+                  {/if}
+                </div>
                 <p>{#if selectedFile.previousPath}{selectedFile.previousPath} → {/if}{selectedFile.path}</p>
               </div>
               {#if selectedWorktreePatch}
                 <span class="patch-side">{selectedWorktreePatch.side === "staged" ? "Staged" : "Unstaged"}</span>
               {/if}
               {#if selectedFile.status === "U"}<span class="patch-side conflict">Conflicted</span>{/if}
-              <div class="diff-layout" role="group" aria-label="Diff layout">
-                <button type="button" aria-pressed={layout === "unified"} onclick={() => switchLayout("unified")} disabled={busy}>
-                  Unified
-                </button>
-                <button type="button" aria-pressed={layout === "split"} onclick={() => switchLayout("split")} disabled={busy}>
-                  Split
-                </button>
-              </div>
               <div class="file-actions">
-                {#if selectedWorktreePatch}
+                {#if selectedWorktreePatch?.side === "unstaged"}
                   {@const patch = selectedWorktreePatch}
-                  <button id="review-file" class:primary={!patch.reviewed} type="button" onclick={() => markWorktreePatch(patch)} disabled={busy}>
-                    {patch.reviewed ? "Clear review mark" : "Mark as reviewed"}
-                  </button>
-                  {#if patch.side === "unstaged"}
-                    <button
-                      id="stage-file"
-                      class:primary={patch.reviewed && patch.status !== "U"}
-                      type="button"
-                      onclick={() => stageWorktreePatch(patch)}
-                      disabled={busy || !patch.reviewed || patch.status === "U"}>
-                      Stage file
-                    </button>
-                  {/if}
-                {:else if review && comparison}
-                  {@const current = review}
-                  {@const displayed = comparison}
                   <button
-                    id="review-file"
+                    id="stage-file"
+                    class:primary={patch.reviewed && patch.status !== "U"}
                     type="button"
-                    onclick={() => markFile(current.summary.id, displayed, selectedIndex)}
-                    disabled={busy}>
-                    {reviewedFiles.has(selectedIndex) ? "Clear review mark" : "Mark as reviewed"}
+                    onclick={() => stageWorktreePatch(patch)}
+                    disabled={busy || !patch.reviewed || patch.status === "U"}>
+                    Stage file
                   </button>
                 {/if}
                 {#if comparison && !review}
@@ -516,38 +588,17 @@ function stageWorktreePatch(patch: WorktreePatch): void {
             </header>
             <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling from the top of the diff.) -->
             <div class="file-body" role="region" aria-label="Patch content" tabindex="0" bind:this={fileBody}>
-              {#if selectedHasChanges}
+              {#if selectedFile.patch}
                 <DiffView patch={selectedFile.patch} path={selectedFile.path} previousPath={selectedFile.previousPath} {layout} />
               {/if}
-              {#key selectedIndex}
-                <details class="file-metadata" open={!selectedHasChanges}>
-                  <summary>File details</summary>
-                  {#if selectedWorktreePatch}
-                    <FileDetails checkout={activeCheckout} source={{
-                      kind: "worktree",
-                      fingerprint: selectedWorktreePatch.fingerprint,
-                      path: selectedWorktreePatch.path,
-                      previousPath: selectedWorktreePatch.previousPath,
-                      pathBytes: selectedWorktreePatch.pathBytes ?? null,
-                      previousPathBytes: selectedWorktreePatch.previousPathBytes ?? null,
-                    }} />
-                  {:else if comparison}
-                    <FileDetails checkout={activeCheckout} source={{
-                      kind: "comparison",
-                      start: comparison.start,
-                      end: comparison.end,
-                      path: selectedFile.path,
-                      previousPath: selectedFile.previousPath,
-                      pathBytes: selectedFile.pathBytes,
-                      previousPathBytes: selectedFile.previousPathBytes,
-                      status: selectedFile.status,
-                    }} />
-                  {/if}
-                </details>
-              {/key}
-              {#if !selectedHasChanges}
-                <DiffView patch={selectedFile.patch} path={selectedFile.path} previousPath={selectedFile.previousPath} {layout} />
+              {#if details && showImagePreviews}
+                {#key detailsSource}
+                  <FilePreviews {details} />
+                {/key}
+              {:else if !selectedFile.patch && !detailsError}
+                <p class="patch-note" role="status">{details ? "No text diff available." : "Loading file…"}</p>
               {/if}
+              {#if detailsError}<p class="patch-note" role="status">{detailsError}</p>{/if}
             </div>
           </section>
           <aside id="changed-files" class="file-list" aria-label="File sidebar" hidden={filesCollapsed}>
@@ -852,7 +903,11 @@ progress::-moz-progress-bar { background: var(--accent); }
 }
 .file-heading { flex: 1 1 8rem; min-width: 0; }
 .file-heading h2, .file-heading p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-heading h2 { font-size: 1.05rem; }
+.file-title { display: flex; align-items: center; gap: 0.5rem; }
+.file-title h2 { min-width: 0; font-size: 1.05rem; }
+#review-file { flex: none; width: 1rem; height: 1rem; margin: 0; cursor: pointer; }
+#review-file:disabled { cursor: default; }
+.size-change { flex: none; font: 0.8rem ui-monospace, monospace; white-space: nowrap; }
 .file-heading p { color: var(--muted); font-size: 0.8rem; }
 .patch-side { border: 1px solid var(--border); border-radius: 5px; padding: 0.15rem 0.38rem; font-size: 0.75rem; }
 .file-header button, .app-bar button { font-size: 0.85rem; }
@@ -862,9 +917,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .diff-layout button[aria-pressed="true"] { background: var(--selection); }
 .file-body { flex: 1; min-height: 0; overflow: auto; }
 .file-body:focus-visible { outline-offset: -2px; }
-.file-metadata { padding: 0.55rem 0.8rem; border-block: 1px solid var(--border); color: var(--muted); }
-.file-metadata summary { cursor: pointer; }
-.file-metadata[open] summary { margin-block-end: 0.65rem; }
+.patch-note { padding: 0.55rem 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
 
 @media (max-width: 520px) {
   .workspace-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }

@@ -32,4 +32,23 @@ interface FileDetails {
   after: FileVersion | null;
 }
 
+const bytesPerKilobyte = 1000;
+const bytesPerMegabyte = bytesPerKilobyte * bytesPerKilobyte;
+const sizeFormatter = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });
+const imageFormats = new Set(["JPEG", "PNG", "GIF", "WebP"]);
+
+function formatSizeChange(delta: number, exact = false): string {
+  const bytes = Math.abs(delta);
+  const sign = delta > 0 ? "+" : delta < 0 ? "−" : "";
+  if (exact) return `${ sign }${ sizeFormatter.format(bytes) } bytes`;
+  if (bytes >= bytesPerMegabyte) return `${ sign }${ sizeFormatter.format(bytes / bytesPerMegabyte) } MB`;
+  if (bytes >= bytesPerKilobyte) return `${ sign }${ sizeFormatter.format(bytes / bytesPerKilobyte) } KB`;
+  return `${ sign }${ bytes } B`;
+}
+
+function isImageVersion(version: FileVersion | null): boolean {
+  return version?.preview != null || imageFormats.has(version?.format ?? "");
+}
+
+export { formatSizeChange, isImageVersion };
 export type { FileDetails, FileDetailsSource, FileVersion };
