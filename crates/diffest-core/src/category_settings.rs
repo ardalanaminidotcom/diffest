@@ -94,7 +94,7 @@ impl CategorySettings {
                         subcategory: rule.subcategory.clone(),
                     },
                     None => FileCategory {
-                        category: "Other".into(),
+                        category: "Source".into(),
                         subcategory: None,
                     },
                 }
@@ -348,13 +348,6 @@ static BUILT_INS: LazyLock<CompiledRules> = LazyLock::new(|| {
                 "**/{doc,docs}/**",
                 "**/*.{md,rst}",
                 "**/{README,CHANGELOG,LICENSE}*",
-            ],
-        ),
-        (
-            "Source",
-            &[
-                "**/{src,lib}/**",
-                "**/*.{rs,js,jsx,ts,tsx,py,go,c,h,cpp,java,svelte,vue,css,html}",
             ],
         ),
     ];

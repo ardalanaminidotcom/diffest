@@ -36,7 +36,7 @@ type FileGroups = Map<string, Map<string | null, number[]>>;
 function groupFiles(paths: string[], categories: FileCategory[]): FileGroups {
   const groups: FileGroups = new Map();
   for (const [index] of paths.entries()) {
-    const category = categories[index]?.category ?? "Other";
+    const category = categories[index]?.category ?? "Source";
     const subcategory = categories[index]?.subcategory ?? null;
     const subgroups = groups.get(category) ?? new Map<string | null, number[]>();
     const files = subgroups.get(subcategory) ?? [];

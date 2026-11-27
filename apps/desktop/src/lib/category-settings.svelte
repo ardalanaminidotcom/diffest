@@ -172,7 +172,7 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
           {/if}
         {:else}
           <h1 id="settings-section-title">File categories</h1>
-          <p class="intro">Group changed files in the Files sidebar. The first matching glob wins.</p>
+          <p class="intro">The first matching glob wins. Unmatched files go to Source.</p>
           {#if tier}
             {#key checkout}
               {@const draftKey = scope}

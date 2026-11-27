@@ -77,7 +77,7 @@ fn changed_files_use_first_matching_glob_and_choose_the_rename_destination() {
                 assert_eq!(category.subcategory.as_deref(), Some("Core"));
             }
             'D' => assert_eq!(category.category, "Docs"),
-            'A' => assert_eq!(category.category, "Other"),
+            'A' => assert_eq!(category.category, "Source"),
             _ => panic!("Unexpected status {}", file.status),
         }
     }
@@ -114,7 +114,7 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
     };
     assert_eq!(
         categories(read()),
-        ["Source", "Tests", "Docs", "Generated", "Other"]
+        ["Source", "Tests", "Docs", "Generated", "Source"]
     );
     let global = read().global;
     let project = read().project.unwrap();
@@ -133,7 +133,7 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
         .unwrap();
     assert_eq!(
         categories(read()),
-        ["Global Rust", "Other", "Other", "Global Rust", "Other"]
+        ["Global Rust", "Source", "Source", "Global Rust", "Source"]
     );
 
     fs::create_dir_all(project.path.parent().unwrap()).unwrap();
@@ -144,13 +144,13 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
     .unwrap();
     let customized_project = read().project.unwrap();
     assert!(customized_project.custom);
-    assert_eq!(categories(read()), ["Other"; 5]);
+    assert_eq!(categories(read()), ["Source"; 5]);
     settings
         .save(Some(&main), &customized_project.version.unwrap(), None)
         .unwrap();
     assert_eq!(
         categories(read()),
-        ["Global Rust", "Other", "Other", "Global Rust", "Other"]
+        ["Global Rust", "Source", "Source", "Global Rust", "Source"]
     );
     assert!(!read().project.unwrap().custom);
     assert_eq!(
@@ -165,7 +165,7 @@ fn both_settings_resets_restore_inheritance_across_linked_worktrees() {
     assert!(!read().global.custom);
     assert_eq!(
         categories(read()),
-        ["Source", "Tests", "Docs", "Generated", "Other"]
+        ["Source", "Tests", "Docs", "Generated", "Source"]
     );
 }
 

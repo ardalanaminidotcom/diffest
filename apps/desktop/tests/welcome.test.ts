@@ -109,7 +109,7 @@ beforeEach(() => {
       defaultDiffLayout,
       project   : null,
       categories: paths.map(path => ({
-        category   : path === "after.txt" ? "Tests" : "Other",
+        category   : path === "after.txt" ? "Tests" : "Source",
         subcategory: path === "after.txt" ? "Unit" : null,
       })),
     };
@@ -413,7 +413,7 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   });
   await vi.waitFor(() => {
     const groups = target.querySelectorAll("[aria-label='Changed files'] summary");
-    expect([...groups].map(group => group.textContent)).toEqual(["Other", "Tests", "Unit"]);
+    expect([...groups].map(group => group.textContent)).toEqual(["Source", "Tests", "Unit"]);
   });
   const rename = element(target, "[aria-label='Changed files'] details details button");
   expect(rename.textContent).toContain(String.raw`before\xff.txt`);
