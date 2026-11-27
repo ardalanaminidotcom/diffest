@@ -10,9 +10,18 @@ interface Properties {
   paths: string[];
   categories?: FileCategory[];
   defaultLayout?: DiffLayout;
+  open?: boolean;
+  announcement?: string;
 }
 
-let { mainCheckout, paths, categories = $bindable([]), defaultLayout = $bindable("unified") }: Properties = $props();
+let {
+  mainCheckout,
+  paths,
+  categories = $bindable([]),
+  defaultLayout = $bindable("unified"),
+  open = $bindable(false),
+  announcement = $bindable(""),
+}: Properties = $props();
 let settings = $state<Categorization>();
 let loadedCheckout = $state<string | null>(null);
 let error = $state("");
@@ -80,11 +89,14 @@ const errorAnnouncement = $derived([
   settings?.global.error,
   loadedCheckout === mainCheckout ? settings?.project?.error : null,
 ].filter(Boolean).join(" "));
+$effect(() => {
+  announcement = errorAnnouncement;
+});
 </script>
 
 <svelte:window onfocus={refresh} />
 
-<details name="workspace-menu" class="category-settings">
+<details name="workspace-menu" class="category-settings" bind:open>
   <summary title="Settings" aria-label={errorAnnouncement ? "Settings, error" : "Settings"}
     class:has-error={Boolean(errorAnnouncement)}>
     <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
@@ -135,7 +147,6 @@ const errorAnnouncement = $derived([
     {/if}
   </div>
 </details>
-<span class="settings-announcement" aria-live="polite">{errorAnnouncement}</span>
 
 <style>
 summary {
@@ -162,14 +173,6 @@ summary.has-error::after {
   height: 0.35rem;
   border-radius: 50%;
   background: var(--removed-ink);
-}
-.settings-announcement {
-  position: absolute;
-  clip-path: inset(50%);
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  white-space: nowrap;
 }
 .settings-panel {
   position: absolute;

@@ -756,6 +756,18 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   const split = "[aria-label='Split patch']";
   element(target, "[aria-label='Diff layout'] button:last-child").click();
   await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
+  const projectsToggle = ".app-bar button[aria-controls=projects]";
+  element(target, "#projects footer summary[title=Settings]").click();
+  element(target, projectsToggle).click();
+  flushSync();
+  expect(element(target, projectsToggle).getAttribute("aria-expanded")).toBe("false");
+  expect(element(target, "#projects").inert).toBe(true);
+  expect(target.querySelector("#projects footer details[open]")).toBeNull();
+  expect(target.querySelector(split)).toBeTruthy();
+  element(target, projectsToggle).click();
+  flushSync();
+  expect(element(target, projectsToggle).getAttribute("aria-expanded")).toBe("true");
+  expect(element(target, "#projects").inert).toBe(false);
   const rows = [...target.querySelectorAll(`${ split } tbody tr:has(td)`)]
     .map(row => [...row.querySelectorAll("td")].map(cell => cell.textContent.trim()));
   expect(rows).toEqual([
