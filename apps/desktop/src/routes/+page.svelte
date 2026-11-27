@@ -60,6 +60,7 @@ let activeProjectId = $state<number>();
 let revisions = $state<Revisions>();
 let base = $state("");
 let target = $state("HEAD");
+let fetchStatus = $state("");
 let mode = $state<ComparisonMode>("between");
 let openReviewState = $state<OpenReview | null>(null);
 let comparison = $derived(openReviewState?.kind === "comparison" ? openReviewState.comparison : null);
@@ -271,6 +272,7 @@ async function openWorktree(path: string, projectId: number, loadChanges = true)
   filesCollapsed = false;
   revisions = nextRevisions;
   activeCheckout = path;
+  fetchStatus = "";
   activeProjectId = projectId;
   base = "";
   target = "HEAD";
@@ -376,6 +378,21 @@ function markFile(displayed: Comparison, fileIndex: number): void {
   });
 }
 
+function fetchBranches(): void {
+  void run(async () => {
+    fetchStatus = "Fetching…";
+    try {
+      revisions = await invoke<Revisions>("fetch_revisions", { checkout: activeCheckout });
+      fetchStatus = "Branches updated.";
+    } catch (error_) {
+      fetchStatus = String(error_);
+
+      // Another remote may have succeeded before Git reported the error.
+      revisions = await invoke<Revisions>("open_worktree", { checkout: activeCheckout }).catch(() => revisions);
+    }
+  });
+}
+
 function refreshComparison(): void {
   const projectId = activeProjectId;
   if (!base && projectId) {
@@ -456,7 +473,8 @@ function stageWorktreePatch(patch: WorktreePatch): void {
       {/if}
       <div class="workspace-actions">
         {#if revisions}
-          <RevisionPicker {revisions} source={base} {target} {mode} {busy} bind:sourceOpen oncompare={compare} />
+          <RevisionPicker {revisions} source={base} {target} {mode} {busy} {fetchStatus}
+            bind:sourceOpen oncompare={compare} onfetch={fetchBranches} />
         {/if}
         {#if files.length}
           <div class="diff-layout" role="group" aria-label="Diff layout">

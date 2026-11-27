@@ -273,6 +273,15 @@ impl Application {
         git::revisions(&git::checkout_root(checkout)?)
     }
 
+    pub fn fetch_revisions(&self, checkout: &Path) -> Result<Revisions, String> {
+        let checkout = self.require_registered_checkout(checkout, false)?;
+        git::git(
+            &checkout,
+            &["fetch", "--all", "--no-recurse-submodules", "--no-prune"],
+        )?;
+        git::revisions(&checkout)
+    }
+
     pub fn compare_revisions(
         &self,
         checkout: &Path,

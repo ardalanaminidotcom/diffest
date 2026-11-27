@@ -1037,3 +1037,53 @@ fn many_small_untracked_files_stop_worktree_review_before_diffing_each_file() {
     let error = app.open_worktree_review(&main).err().unwrap();
     assert!(error.contains("Too many untracked or conflicted files"), "{error}");
 }
+
+#[test]
+fn fetch_discovers_remote_targets_without_switching_the_checkout() {
+    let temp = tempfile::tempdir().unwrap();
+    let upstream = init_project(temp.path());
+    fs::write(upstream.join("notes.txt"), "initial\n").unwrap();
+    git(&upstream, &["add", "notes.txt"]);
+    git(&upstream, &["commit", "-m", "Initial"]);
+
+    let checkout = temp.path().join("checkout");
+    git(temp.path(), &["clone", "project", "checkout"]);
+    let head = git(&checkout, &["rev-parse", "HEAD"]);
+    fs::write(checkout.join("notes.txt"), "staged\n").unwrap();
+    git(&checkout, &["add", "notes.txt"]);
+    fs::write(checkout.join("notes.txt"), "working tree\n").unwrap();
+    let index = git(&checkout, &["write-tree"]);
+
+    git(&upstream, &["switch", "-c", "release"]);
+    fs::write(upstream.join("notes.txt"), "release\n").unwrap();
+    git(&upstream, &["commit", "-am", "Release updates"]);
+
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    assert!(app.fetch_revisions(&checkout).is_err());
+    app.register_project(&checkout).unwrap();
+    assert!(
+        app.open_worktree(&checkout)
+            .unwrap()
+            .remote_branches
+            .is_empty()
+    );
+    let revisions = app.fetch_revisions(&checkout).unwrap();
+    assert_eq!(revisions.branches, ["main"]);
+    assert_eq!(revisions.remote_branches, ["origin/release"]);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&checkout, &["write-tree"]), index);
+    assert_eq!(
+        fs::read_to_string(checkout.join("notes.txt")).unwrap(),
+        "working tree\n"
+    );
+
+    let comparison = app
+        .compare_revisions(
+            &checkout,
+            "HEAD",
+            "refs/remotes/origin/release",
+            ComparisonMode::Between,
+        )
+        .unwrap();
+    assert_eq!(comparison.files[0].path, "notes.txt");
+}

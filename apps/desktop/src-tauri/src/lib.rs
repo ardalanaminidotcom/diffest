@@ -46,6 +46,15 @@ async fn open_worktree(
 }
 
 #[tauri::command]
+async fn fetch_revisions(handle: AppHandle, checkout: PathBuf) -> Result<Revisions, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.state::<Application>().fetch_revisions(&checkout)
+    })
+    .await
+    .map_err(|error| format!("Cannot run fetch: {error}"))?
+}
+
+#[tauri::command]
 async fn compare_revisions(
     app: State<'_, Application>,
     checkout: PathBuf,
@@ -171,6 +180,7 @@ pub fn run() {
             list_projects,
             register_project,
             open_worktree,
+            fetch_revisions,
             compare_revisions,
             start_commit_review,
             open_commit_review,

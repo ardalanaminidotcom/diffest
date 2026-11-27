@@ -588,7 +588,7 @@ it("offers distinct remote branch tips and switches from a clean checkout to a w
   element(target, "#projects li button").click();
   await vi.waitFor(() => expect(target.textContent).toContain("Choose a source branch or commit"));
   element(target, ".revision-picker .target > summary").click();
-  element(target, ".revision-picker .target .option:nth-child(2)").click();
+  element(target, ".revision-picker .target button[title='Working tree']").click();
   await vi.waitFor(() => {
     expect(element(target, ".revision-picker .source > summary").textContent).toContain("HEAD");
     expect(element(target, ".revision-picker .target > summary").textContent).toContain("Working tree");
@@ -602,6 +602,70 @@ it("offers distinct remote branch tips and switches from a clean checkout to a w
       mode    : "between",
     });
   });
+});
+
+it("fetches remote branches in the target picker without rerunning the current comparison", async () => {
+  const comparison = {
+    baseLabel  : "refs/heads/main",
+    targetLabel: "HEAD",
+    mode       : "divergence",
+    base       : "base",
+    start      : "base",
+    end        : "head",
+    files      : [],
+    progress   : null,
+  };
+  const references = {
+    ...revisions,
+    defaultBranch: "refs/heads/main",
+    currentBranch: "refs/heads/topic",
+  };
+  const fetched = {
+    ...references,
+    remoteBranches: ["origin/release"],
+  };
+  const releaseComparison = {
+    ...comparison,
+    targetLabel: "refs/remotes/origin/release",
+  };
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce(references)
+    .mockResolvedValueOnce(comparison)
+    .mockRejectedValueOnce("One remote could not be reached")
+    .mockResolvedValueOnce(fetched)
+    .mockResolvedValueOnce(fetched)
+    .mockResolvedValueOnce(releaseComparison);
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("#projects li button")).toBeTruthy());
+  element(target, "#projects li button").click();
+  const picker = ".revision-picker .target";
+  const trigger = `${ picker } > summary`;
+  await vi.waitFor(() => expect(element(target, trigger).textContent).toContain("HEAD"));
+  element(target, trigger).click();
+  flushSync();
+  expect(element(target, picker).textContent).toContain("Recent commits");
+  const fetch = [...target.querySelectorAll<HTMLButtonElement>(`${ picker } button`)]
+    .find(button => button.textContent === "Fetch branches");
+  if (!fetch) throw new Error("Missing Fetch branches button");
+  fetch.click();
+  const release = `${ picker } .option[title='origin/release']`;
+  await vi.waitFor(() => expect(target.querySelector(release)).toBeTruthy());
+  expect(revisionCommands).toHaveBeenLastCalledWith("open_worktree", { checkout: main.path });
+  expect(element(target, picker).textContent).toContain("One remote could not be reached");
+  fetch.click();
+  await vi.waitFor(() => expect(element(target, picker).textContent).toContain("Branches updated."));
+  expect(revisionCommands).toHaveBeenLastCalledWith("fetch_revisions", { checkout: main.path });
+  expect(element(target, trigger).textContent).toContain("HEAD");
+  input(target, `${ picker } input`, "release");
+  expect(element(target, picker).textContent).not.toContain("Recent commits");
+  element(target, release).click();
+  await vi.waitFor(() => expect(revisionCommands).toHaveBeenLastCalledWith("compare_revisions", {
+    checkout: main.path,
+    base    : "refs/heads/main",
+    target  : "refs/remotes/origin/release",
+    mode    : "between",
+  }));
 });
 
 it("saves the displayed comparison and resumes shared review progress from another worktree", async () => {

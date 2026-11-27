@@ -88,6 +88,9 @@ fn git_with_storage(
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .args(paths);
+    if args.starts_with(&["fetch"]) {
+        command.env("GIT_TERMINAL_PROMPT", "0");
+    }
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }

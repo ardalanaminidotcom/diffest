@@ -9,20 +9,26 @@ interface Properties {
   mode: ComparisonMode;
   busy: boolean;
   sourceOpen?: boolean;
+  fetchStatus: string;
+  onfetch(): void;
   oncompare(source: string, target: string, mode: ComparisonMode): void;
 }
 
-let { revisions, source, target, mode, busy, sourceOpen = $bindable(false), oncompare }: Properties = $props();
+let {
+  revisions, source, target, mode, busy, sourceOpen = $bindable(false), fetchStatus, oncompare, onfetch,
+}: Properties = $props();
 let targetOpen = $state(false);
 let query = $state("");
 let targetQuery = $state("");
 let picker: HTMLDivElement | undefined = $state();
+let targetInput: HTMLInputElement | undefined = $state();
 let sourceInput: HTMLInputElement | undefined = $state();
 let sourceTrigger: HTMLElement | undefined = $state();
 let targetTrigger: HTMLElement | undefined = $state();
 
 $effect(() => {
   if (sourceOpen) sourceInput?.focus();
+  if (targetOpen) targetInput?.focus();
 });
 function label(reference: string): string {
   return reference.replace(/^refs\/(heads|remotes)\//u, "");
@@ -33,12 +39,19 @@ const branches = $derived([
   ...revisions.remoteBranches.map(branch => `refs/remotes/${ branch }`),
 ]);
 const search = $derived(query.trim().toLowerCase());
-const filteredBranches = $derived(branches.filter(branch => label(branch).toLowerCase()
-  .includes(search)));
-const commits = $derived(revisions.commits.filter(({ id, subject }) => {
-  const matchesSubject = subject.toLowerCase().includes(search);
-  return id.toLowerCase().includes(search) || matchesSubject;
-}));
+const targetSearch = $derived(targetQuery.trim().toLowerCase());
+
+function matchingBranches(term: string): string[] {
+  return branches.filter(branch => label(branch).toLowerCase()
+    .includes(term));
+}
+
+function matchingCommits(term: string): Revisions["commits"] {
+  return revisions.commits.filter(({ id, subject }) => {
+    const matchesSubject = subject.toLowerCase().includes(term);
+    return id.toLowerCase().includes(term) || matchesSubject;
+  });
+}
 
 function defaultMode(reference: string, destination: string): ComparisonMode {
   const defaultBranch = revisions.defaultBranch;
@@ -52,17 +65,21 @@ function closeSource(): void {
   sourceTrigger?.focus();
 }
 
+function matchingReference(reference: string): string | undefined {
+  return branches.find(candidate => candidate === reference || label(candidate) === reference);
+}
+
 function chooseSource(reference: string): void {
   if (!reference || busy) return;
 
-  const branch = branches.find(candidate => candidate === reference || label(candidate) === reference);
-  const selected = branch ?? reference;
+  const selected = matchingReference(reference) ?? reference;
   closeSource();
   query = "";
   oncompare(selected, target, defaultMode(selected, target));
 }
 
 function chooseTarget(destination: string): void {
+  targetQuery = "";
   targetOpen = false;
   targetTrigger?.focus();
   if (busy || destination === target) return;
@@ -78,14 +95,17 @@ function chooseTarget(destination: string): void {
   oncompare(nextSource, destination, defaultMode(nextSource, destination));
 }
 
-function submit(event: SubmitEvent): void {
+function submitSource(event: SubmitEvent): void {
   event.preventDefault();
   const reference = query.trim();
   if (!reference) return;
 
-  const exactBranch = branches.some(branch => branch === reference || label(branch) === reference);
-  if (exactBranch || reference === "HEAD") chooseSource(reference);
-  else chooseSource(filteredBranches[0] ?? commits[0]?.id ?? reference);
+  if (matchingReference(reference) || reference === "HEAD") {
+    chooseSource(reference);
+    return;
+  }
+  const term = reference.toLowerCase();
+  chooseSource(matchingBranches(term)[0] ?? matchingCommits(term)[0]?.id ?? reference);
 }
 </script>
 
@@ -102,6 +122,35 @@ function submit(event: SubmitEvent): void {
   }
 }} />
 
+{#snippet results(term: string, selected: string, choose: (reference: string) => void)}
+  {@const filteredBranches = matchingBranches(term)}
+  {@const commits = matchingCommits(term)}
+  {#if filteredBranches.length}
+    <p>Branches</p>
+    {#each filteredBranches as branch (branch)}
+      <button class="option" type="button" title={label(branch)} aria-current={selected === branch}
+        onclick={() => choose(branch)} disabled={busy}>
+        {label(branch)}{#if revisions.defaultBranch === branch}<small>Default</small>{/if}
+      </button>
+    {/each}
+  {/if}
+  {#if commits.length}
+    <p>Recent commits</p>
+    {#each commits as commit (commit.id)}
+      <button class="option" type="button" aria-current={selected === commit.id} onclick={() => choose(commit.id)} disabled={busy}>
+        <code>{commit.id.slice(0, 7)}</code> <span>{commit.subject}</span>
+      </button>
+    {/each}
+  {/if}
+{/snippet}
+
+{#snippet fetchControl()}
+  <div class="fetch-control">
+    <p role="status">{fetchStatus}</p>
+    <button type="button" onclick={onfetch} disabled={busy}>Fetch branches</button>
+  </div>
+{/snippet}
+
 <div class="revision-picker" bind:this={picker}>
   <details name="workspace-menu" class="source" bind:open={sourceOpen}>
     <summary bind:this={sourceTrigger} aria-label={source ? "Source " + label(source) : "Choose source"} title={label(source) || "Choose source"}>
@@ -110,35 +159,21 @@ function submit(event: SubmitEvent): void {
       <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
     </summary>
     <div class="panel">
-      <form id="compare" onsubmit={submit}>
+      <form id="compare" onsubmit={submitSource}>
         <input id="base" bind:this={sourceInput} aria-label="Search branches or commits" placeholder="Branch or commit" bind:value={query} disabled={busy} />
         <button type="submit" disabled={busy || !query.trim()}>Compare</button>
       </form>
       {#if !search || "head".includes(search)}
         <button class="option" type="button" onclick={() => chooseSource("HEAD")} disabled={busy}>HEAD</button>
       {/if}
-      {#if filteredBranches.length}
-        <p>Branches</p>
-        {#each filteredBranches as branch (branch)}
-          <button class="option" type="button" aria-current={source === branch} onclick={() => chooseSource(branch)} disabled={busy}>
-            {label(branch)}{#if revisions.defaultBranch === branch}<small>Default</small>{/if}
-          </button>
-        {/each}
-      {/if}
-      {#if commits.length}
-        <p>Recent commits</p>
-        {#each commits as commit (commit.id)}
-          <button class="option" type="button" aria-current={source === commit.id} onclick={() => chooseSource(commit.id)} disabled={busy}>
-            <code>{commit.id.slice(0, 7)}</code> <span>{commit.subject}</span>
-          </button>
-        {/each}
-      {/if}
+      {@render results(search, source, chooseSource)}
       {#if source && target !== "Working tree"}
         <button class="option mode" type="button" disabled={busy} onclick={() => {
           closeSource();
           oncompare(source, target, mode === "between" ? "divergence" : "between");
         }}>{mode === "between" ? "Compare since divergence" : "Compare branch tips"}</button>
       {/if}
+      {@render fetchControl()}
     </div>
   </details>
   <svg class="direction" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M13 8H3m4-4L3 8l4 4"/></svg>
@@ -149,18 +184,26 @@ function submit(event: SubmitEvent): void {
       <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
     </summary>
     <div class="panel">
-      <button class="option" type="button" aria-current={target === "HEAD"} onclick={() => chooseTarget("HEAD")} disabled={busy}>HEAD <small>Current commit</small></button>
-      <button class="option" type="button" aria-current={target === "Working tree"} onclick={() => chooseTarget("Working tree")} disabled={busy}>Working tree <small>Local edits</small></button>
-      <form class="other-target" onsubmit={(event) => {
+      <form onsubmit={(event) => {
         event.preventDefault();
-        const destination = targetQuery.trim();
-        if (!destination) return;
-        targetQuery = "";
-        chooseTarget(destination);
+        const reference = targetQuery.trim();
+        if (reference) chooseTarget(reference);
       }}>
-        <input aria-label="Target revision" placeholder="Other branch or commit" bind:value={targetQuery} disabled={busy}/>
+        <input aria-label="Target revision" placeholder="Branch or commit" bind:this={targetInput}
+          bind:value={targetQuery} disabled={busy} />
         <button type="submit" disabled={busy || !targetQuery.trim()}>Use</button>
       </form>
+      {#if "head".includes(targetSearch)}
+        <button class="option" type="button" aria-current={target === "HEAD"} onclick={() => chooseTarget("HEAD")}
+          disabled={busy}>HEAD <small>Current commit</small></button>
+      {/if}
+      {#if "working tree".includes(targetSearch)}
+        <button class="option" type="button" title="Working tree" aria-current={target === "Working tree"}
+          onclick={() => chooseTarget("Working tree")}
+          disabled={busy}>Working tree <small>Local edits</small></button>
+      {/if}
+      {@render results(targetSearch, target, chooseTarget)}
+      {@render fetchControl()}
     </div>
   </details>
 </div>
@@ -201,9 +244,21 @@ svg { width: 0.85rem; height: 0.85rem; flex: none; stroke: var(--muted); stroke-
   background: var(--surface);
   box-shadow: 0 6px 16px #0002;
 }
-.target .panel { inset-inline: auto 0; width: min(13rem, 70vw); }
+.target .panel { inset-inline: auto 0; }
 form { display: flex; align-items: center; gap: 0.3rem; margin: 0 0 0.35rem; }
-.other-target { margin: 0.3rem 0 0; }
+.fetch-control {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.fetch-control p { margin: 0; overflow-wrap: anywhere; }
+.fetch-control button { flex: none; }
 input { flex: 1; min-width: 0; padding: 0.3rem 0.4rem; }
 button { padding: 0.3rem 0.4rem; cursor: pointer; }
 button:disabled { opacity: 0.55; cursor: default; }
