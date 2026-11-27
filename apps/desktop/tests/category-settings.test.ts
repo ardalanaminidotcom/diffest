@@ -87,12 +87,14 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
         custom : true,
       },
     });
-  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
-    ? Promise.resolve({
-        days        : 7,
-        overrideDays: null,
-      })
-    : commands(command, parameters)));
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
 
   const target = render();
   const picker = target.querySelector<HTMLSelectElement>("select");
@@ -172,12 +174,14 @@ it("saves new global category and subcategory labels and resets to the built-in 
       },
     })
     .mockResolvedValue(inherited);
-  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
-    ? Promise.resolve({
-        days        : 7,
-        overrideDays: null,
-      })
-    : commands(command, parameters)));
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
 
   const target = render();
   button(target, "File categories").click();
@@ -263,12 +267,14 @@ it("groups adjacent category rules without moving rules across an intervening ca
     .mockResolvedValueOnce(null)
     .mockResolvedValue(snapshot);
 
-  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
-    ? Promise.resolve({
-        days        : 7,
-        overrideDays: null,
-      })
-    : commands(command, parameters));
+  vi.mocked(invoke).mockImplementation((command, parameters) => {
+    if (command !== "read_review_retention") return commands(command, parameters);
+
+    return Promise.resolve({
+      days        : 7,
+      overrideDays: null,
+    });
+  });
   const target = render();
   button(target, "File categories").click();
   const form = await vi.waitFor(() => {

@@ -31,7 +31,10 @@ function splitCell(line: PatchLine | undefined, before: boolean): string {
 function renderDiffRows(hunks: ReadonlyArray<readonly PatchLine[]>, layout: DiffLayout, windowRows: boolean): string[] {
   const split = layout === "split";
   const rows = hunks.flatMap((lines, index) => {
-    const boundary = (rowIndex: number): string => index > 0 && rowIndex === 0 ? "hunk-start" : "";
+    function boundary(rowIndex: number): string {
+      return index > 0 && rowIndex === 0 ? "hunk-start" : "";
+    }
+
     return split
       ? splitHunk(lines).map((row, rowIndex) => {
           const cells = splitCell(row.before, true) + splitCell(row.after, false);
