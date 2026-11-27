@@ -20,7 +20,7 @@ let scope = $state(untrack(() => {
   const project = configurableProjects.find(item => item.id === activeProjectId);
   return project?.id.toString() ?? "";
 }));
-let section = $state<"general" | "categories">(untrack(() => (scope ? "categories" : "general")));
+let section = $state<"general" | "categories">(untrack(() => scope ? "categories" : "general"));
 const checkout = $derived(configurableProjects.find(project => project.id.toString() === scope)?.mainCheckout ?? null);
 
 let loadedCheckout = $state<string | null>();
@@ -132,7 +132,7 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
   <div class="settings-workspace">
     <header class="settings-bar">
       <strong>Settings</strong>
-      <div class="scope-picker">
+      <label class="scope-picker">
         {#if checkout === null}
           <svg aria-hidden="true" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" /><ellipse cx="8" cy="8" rx="2.5" ry="5.8" /><path d="M2.2 8h11.6" /></svg>
         {:else}
@@ -151,7 +151,7 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
             </option>
           {/each}
         </select>
-      </div>
+      </label>
     </header>
     <div class="settings-scroll">
       <section class="settings-content" aria-labelledby="settings-section-title">
@@ -255,9 +255,30 @@ button:not(:disabled), select:not(:disabled) { cursor: pointer; }
 .nav-button:not(:disabled):hover { background: var(--selection); }
 footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.9rem; border-block-start: 1px solid var(--border); font-weight: 680; }
 footer svg { color: var(--accent); width: 1.125rem; height: 1.125rem; }
-.scope-picker { position: relative; max-width: min(16rem, 65%); }
-.scope-picker svg { position: absolute; inset-inline-start: 0.55rem; inset-block-start: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
-.scope-picker select { max-width: 100%; min-width: min(10rem, 100%); padding: 0.35rem 0.5rem 0.35rem 1.85rem; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); text-overflow: ellipsis; }
+.scope-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  box-sizing: border-box;
+  min-width: min(10rem, 65%);
+  max-width: min(16rem, 65%);
+  padding-inline-start: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--canvas);
+}
+.scope-picker svg { color: var(--muted); }
+.scope-picker select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  text-overflow: ellipsis;
+}
+.scope-picker:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scope-picker select:focus-visible { outline: none; }
 .intro, .setting p { margin-block-start: 0.25rem; color: var(--muted); }
 .setting { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.65rem; margin-block-start: 1.3rem; padding: 0.75rem 0; border-block: 1px solid var(--border); }
 .layout-buttons { display: flex; border: 1px solid var(--border); border-radius: 5px; }
