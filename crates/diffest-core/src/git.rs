@@ -52,7 +52,7 @@ fn git_with_index(
     paths: &[&OsStr],
     index: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
-    git_with_storage(directory, args, paths, index, None)
+    git_with_storage(directory, args, paths, index, None).map(|(output, _)| output)
 }
 
 pub(crate) struct ReviewObjects {
@@ -66,7 +66,14 @@ pub(crate) fn git_with_objects(
     paths: &[&OsStr],
     objects: Option<&ReviewObjects>,
 ) -> Result<Vec<u8>, String> {
-    git_with_storage(checkout, args, paths, None, objects)
+    git_with_storage(checkout, args, paths, None, objects).map(|(output, _)| output)
+}
+
+pub(crate) fn git_with_diagnostics(
+    directory: &Path,
+    args: &[&str],
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    git_with_storage(directory, args, &[], None, None)
 }
 
 fn git_with_storage(
@@ -75,7 +82,7 @@ fn git_with_storage(
     paths: &[&OsStr],
     index: Option<&Path>,
     objects: Option<&ReviewObjects>,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut command = Command::new("git");
     command
         .current_dir(directory)
@@ -149,10 +156,8 @@ fn git_with_storage(
             .map_err(|error| format!("Cannot read Git diagnostics: {error}"))?;
         Ok((status, output, message))
     })?;
-    if status.success()
-        || (args.starts_with(&["diff", "--no-index"]) && status.code() == Some(1))
-    {
-        Ok(stdout)
+    if status.success() || (args.starts_with(&["diff", "--no-index"]) && status.code() == Some(1)) {
+        Ok((stdout, stderr))
     } else {
         let stderr = String::from_utf8_lossy(&stderr);
         let detail = if stderr.trim().is_empty() {
@@ -260,6 +265,37 @@ fn main_worktree(common_directory: &Path, reported: &Path, main_hint: &Path) -> 
     verify(&common_directory.join(path))
 }
 
+pub(crate) fn fetch_branches(checkout: &Path) -> Result<(), String> {
+    git(
+        checkout,
+        &["fetch", "--all", "--no-recurse-submodules", "--no-prune"],
+    )?;
+    // Explicit fetch refspecs can cover local tags; restrict pruning to remote-tracking refs.
+    let stale = git(
+        checkout,
+        &[
+            "fetch",
+            "--all",
+            "--no-recurse-submodules",
+            "--dry-run",
+            "--porcelain",
+            "--prune",
+            "--no-prune-tags",
+        ],
+    )?;
+    for line in String::from_utf8_lossy(&stale).lines() {
+        if let ["-", old, _, reference] = line.split_whitespace().collect::<Vec<_>>().as_slice()
+            && reference.starts_with("refs/remotes/")
+        {
+            git(
+                checkout,
+                &["update-ref", "--no-deref", "-d", reference, old],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
     let refs = git(
         checkout,
@@ -268,6 +304,7 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
             "--format=%(refname)%09%(objectname)%09%(symref)%09%(upstream)",
             "refs/heads/",
             "refs/remotes/",
+            "refs/tags/",
         ],
     )?;
     let refs = String::from_utf8_lossy(&refs);
@@ -299,7 +336,7 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
             }
         })
         .collect();
-    let remote_branches = refs
+    let (synced_remote_branches, remote_branches): (Vec<_>, Vec<_>) = refs
         .iter()
         .filter_map(|(reference, (tip, symbolic, _))| {
             let name = reference.strip_prefix("refs/remotes/")?;
@@ -309,8 +346,12 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
                 || tracked.contains_key(reference),
                 |(local, _, _)| local == tip,
             );
-            (symbolic.is_empty() && !redundant).then(|| name.to_owned())
+            symbolic.is_empty().then(|| (redundant, name.to_owned()))
         })
+        .partition(|(synced, _)| *synced);
+    let tags = refs
+        .keys()
+        .filter_map(|name| name.strip_prefix("refs/tags/").map(str::to_owned))
         .collect();
     let default_branch = refs
         .get("refs/remotes/origin/HEAD")
@@ -352,7 +393,7 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
         });
     let current_branch = git(checkout, &["symbolic-ref", "--quiet", "HEAD"])
         .ok()
-        .map(|name| String::from_utf8_lossy(&name).trim_end().into());
+        .map(|name| String::from_utf8_lossy(&name).trim_end_matches('\n').into());
     let mut args = vec![
         "log",
         "--branches",
@@ -382,7 +423,12 @@ pub(crate) fn revisions(checkout: &Path) -> Result<Revisions, String> {
     }
     Ok(Revisions {
         branches,
-        remote_branches,
+        remote_branches: remote_branches.into_iter().map(|(_, name)| name).collect(),
+        synced_remote_branches: synced_remote_branches
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect(),
+        tags,
         default_branch,
         current_branch,
         commits,
@@ -488,7 +534,7 @@ pub(crate) fn snapshot_worktree(
         Some(&candidate),
         Some(objects),
     )?;
-    let tree = git_with_storage(
+    let (tree, _) = git_with_storage(
         checkout,
         &["-c", &hooks, "write-tree"],
         &[],

@@ -65,8 +65,15 @@ function closeSource(): void {
   sourceTrigger?.focus();
 }
 
-function matchingReference(reference: string): string | undefined {
-  return branches.find(candidate => candidate === reference || label(candidate) === reference);
+function matchingReference(reference: string): string | null {
+  const branch = branches.find(candidate => candidate === reference || label(candidate) === reference);
+  if (branch) return branch;
+
+  const synced = revisions.syncedRemoteBranches?.find(name => name === reference || `refs/remotes/${ name }` === reference);
+  if (synced) return `refs/remotes/${ synced }`;
+
+  const tag = revisions.tags?.find(name => name === reference || `refs/tags/${ name }` === reference);
+  return tag ? `refs/tags/${ tag }` : null;
 }
 
 function chooseSource(reference: string): void {
@@ -97,10 +104,10 @@ function chooseTarget(destination: string): void {
 
 function submitSource(event: SubmitEvent): void {
   event.preventDefault();
-  const reference = query.trim();
+  const reference = matchingReference(query) ?? query.trim();
   if (!reference) return;
 
-  if (matchingReference(reference) || reference === "HEAD") {
+  if (matchingReference(reference) || reference === "HEAD" || reference.startsWith("refs/")) {
     chooseSource(reference);
     return;
   }
@@ -186,8 +193,8 @@ function submitSource(event: SubmitEvent): void {
     <div class="panel">
       <form onsubmit={(event) => {
         event.preventDefault();
-        const reference = targetQuery.trim();
-        if (reference) chooseTarget(reference);
+        const reference = matchingReference(targetQuery) ?? targetQuery.trim();
+        if (reference) chooseTarget(matchingReference(reference) ?? reference);
       }}>
         <input aria-label="Target revision" placeholder="Branch or commit" bind:this={targetInput}
           bind:value={targetQuery} disabled={busy} />

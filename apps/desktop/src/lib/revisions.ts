@@ -11,7 +11,6 @@ interface Project {
   mainCheckout: string | null;
   worktrees: Worktree[];
   worktreeError: string | null;
-  savedReviews: CommitReviewSummary[];
 }
 
 interface Registration {
@@ -27,6 +26,8 @@ interface Commit {
 interface Revisions {
   branches: string[];
   remoteBranches: string[];
+  syncedRemoteBranches?: string[];
+  tags?: string[];
   defaultBranch: string | null;
   currentBranch: string | null;
   commits: Commit[];
@@ -77,8 +78,24 @@ interface CommitReviewProgress {
   reviewedFiles: number[];
 }
 
-interface CommitReview extends CommitReviewProgress {
-  comparison: Comparison;
+interface ReviewSelection {
+  base: string;
+  target: string;
+  mode: ComparisonMode;
+}
+
+type ComparisonUpdate = "current" | "available" | "branch_deleted";
+
+interface ComparisonSession extends Comparison {
+  progress: CommitReviewProgress | null;
+  selection: ReviewSelection;
+  update: ComparisonUpdate;
+  layout: DiffLayout | null;
+}
+
+interface ReviewRetention {
+  days: number;
+  overrideDays: number | null;
 }
 
 type DiffLayout = "unified" | "split";
@@ -87,13 +104,16 @@ type ComparisonMode = "between" | "divergence";
 
 export type {
   ChangedFile,
-  CommitReview,
   CommitReviewProgress,
   Comparison,
   ComparisonMode,
+  ComparisonSession,
+  ComparisonUpdate,
   DiffLayout,
   Project,
   Registration,
+  ReviewRetention,
+  ReviewSelection,
   Revisions,
   StageWorktreePatchResult,
   WorktreePatch,

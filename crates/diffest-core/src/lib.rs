@@ -1,10 +1,12 @@
 pub mod category_settings;
+mod comparison_reviews;
 mod diff_layout;
 mod file_details;
 mod git;
 mod reviews;
 mod worktree_review;
 
+pub use comparison_reviews::{ComparisonUpdate, ReviewRetention, ReviewSelection};
 pub use diff_layout::DiffLayout;
 pub use file_details::{FileDetails, FileDetailsSource};
 pub use reviews::{CommitReview, CommitReviewProgress, CommitReviewSummary};
@@ -20,6 +22,7 @@ use std::{
 
 pub struct Application {
     database: PathBuf,
+    active_review: std::sync::Mutex<Option<i64>>,
 }
 
 #[derive(Serialize)]
@@ -37,7 +40,6 @@ pub struct Project {
     pub main_checkout: Option<PathBuf>,
     pub worktrees: Vec<Worktree>,
     pub worktree_error: Option<String>,
-    pub saved_reviews: Vec<CommitReviewSummary>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +53,8 @@ pub struct Worktree {
 pub struct Revisions {
     pub branches: Vec<String>,
     pub remote_branches: Vec<String>,
+    pub synced_remote_branches: Vec<String>,
+    pub tags: Vec<String>,
     pub default_branch: Option<String>,
     pub current_branch: Option<String>,
     pub commits: Vec<Commit>,
@@ -62,7 +66,7 @@ pub struct Commit {
     pub subject: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonMode {
     Between,
@@ -86,6 +90,9 @@ pub struct ComparisonSession {
     #[serde(flatten)]
     pub comparison: Comparison,
     pub progress: Option<CommitReviewProgress>,
+    pub selection: ReviewSelection,
+    pub update: ComparisonUpdate,
+    pub layout: Option<DiffLayout>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -147,14 +154,16 @@ impl Project {
             main_checkout,
             worktrees: Vec::new(),
             worktree_error,
-            saved_reviews: Vec::new(),
         }
     }
 }
 
 impl Application {
     pub fn new(database: PathBuf) -> Self {
-        Self { database }
+        Self {
+            database,
+            active_review: Default::default(),
+        }
     }
 
     pub fn register_project(&self, checkout: &Path) -> Result<Registration, String> {
@@ -181,7 +190,6 @@ impl Application {
         }
         let mut project = Project::new(id, &common_directory, main_checkout);
         project.worktrees = worktrees;
-        project.saved_reviews = reviews::list(&connection, id)?;
         Ok(Registration { project, checkout })
     }
 
@@ -204,8 +212,7 @@ impl Application {
         rows.into_iter()
             .map(|(id, common_directory, main_checkout)| {
                 let common_directory = Path::new(&common_directory);
-                let mut project = match git::worktrees(common_directory, Path::new(&main_checkout))
-                {
+                let project = match git::worktrees(common_directory, Path::new(&main_checkout)) {
                     Ok((main_checkout, worktrees)) => {
                         let mut project = Project::new(id, common_directory, main_checkout);
                         project.worktrees = worktrees;
@@ -217,7 +224,6 @@ impl Application {
                         project
                     }
                 };
-                project.saved_reviews = reviews::list(&connection, id)?;
                 Ok(project)
             })
             .collect()
@@ -275,10 +281,8 @@ impl Application {
 
     pub fn fetch_revisions(&self, checkout: &Path) -> Result<Revisions, String> {
         let checkout = self.require_registered_checkout(checkout, false)?;
-        git::git(
-            &checkout,
-            &["fetch", "--all", "--no-recurse-submodules", "--no-prune"],
-        )?;
+        git::fetch_branches(&checkout)?;
+        self.check_deleted_reviews(&checkout)?;
         git::revisions(&checkout)
     }
 
@@ -354,6 +358,7 @@ impl Application {
             )?;
             connection.execute_batch(reviews::SCHEMA)?;
             connection.execute_batch(diff_layout::SCHEMA)?;
+            connection.execute_batch(comparison_reviews::SCHEMA)?;
             connection.execute_batch(worktree_review::SCHEMA)?;
             Ok::<_, rusqlite::Error>(connection)
         };

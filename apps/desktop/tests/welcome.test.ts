@@ -16,6 +16,7 @@ const layoutCommands = vi.fn();
 const NativeIntersectionObserver = globalThis.IntersectionObserver;
 const fileVisibility = new WeakMap<Element, (nearViewport: boolean) => void>();
 let defaultDiffLayout = "unified";
+const comparisonStatus = vi.fn();
 let loadWorktreePatches = false;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", class extends NativeIntersectionObserver {
@@ -51,6 +52,8 @@ beforeEach(() => {
   revisionCommands.mockReset();
   layoutCommands.mockReset().mockResolvedValue(null);
   defaultDiffLayout = "unified";
+  comparisonStatus.mockReset().mockResolvedValue("current");
+  const retention = new Map<unknown, number>([[null, 7]]);
   loadWorktreePatches = false;
   vi.mocked(invoke).mockImplementation(async (command, parameters) => {
     if (command === "read_review_layout" || command === "set_review_layout") return layoutCommands(command, parameters);
@@ -94,6 +97,21 @@ beforeEach(() => {
     }
 
     if (command === "open_worktree_review" && !loadWorktreePatches) return [];
+    if (command === "leave_comparison_review") return null;
+    if (command === "comparison_update") return comparisonStatus(parameters);
+    if (command === "read_review_retention" || command === "save_review_retention") {
+      const mainCheckout = parameters && "mainCheckout" in parameters ? parameters.mainCheckout : null;
+      const days = parameters && "days" in parameters ? parameters.days : null;
+      if (command === "save_review_retention") {
+        if (typeof days === "number") retention.set(mainCheckout, days);
+        else retention.delete(mainCheckout);
+      }
+      const overrideDays = retention.get(mainCheckout) ?? null;
+      return {
+        days: overrideDays ?? retention.get(null),
+        overrideDays,
+      };
+    }
     if (command !== "read_category_settings") return revisionCommands(command, parameters);
 
     const filePaths = parameters && "paths" in parameters ? parameters.paths : null;
@@ -165,7 +183,6 @@ const project = {
   mainCheckout : main.path,
   worktrees    : [main, linked],
   worktreeError: null,
-  savedReviews : [],
 };
 const revisions = {
   defaultBranch : null,
@@ -465,7 +482,6 @@ it("reopens a registered project and reports a comparison error", async () => {
     mainCheckout : "/tmp/offline",
     worktrees    : [],
     worktreeError: "Checkout is missing",
-    savedReviews : [],
   };
   const detached = {
     path  : linked.path,
@@ -722,16 +738,26 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     summary      : partialSummary,
     reviewedFiles: [0],
   };
+  const selection = {
+    base  : "refs/heads/main",
+    target: "refs/heads/main",
+    mode  : "between",
+  };
+  const session = {
+    ...comparison,
+    selection,
+    update: "current",
+  };
   const commands = revisionCommands;
   commands
     .mockResolvedValueOnce([project])
     .mockResolvedValueOnce(revisions)
-    .mockResolvedValueOnce(comparison)
+    .mockResolvedValueOnce(session)
     .mockResolvedValueOnce(partial)
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
-      comparison,
-      ...partial,
+      ...session,
+      progress: partial,
     })
     .mockResolvedValueOnce({
       summary      : completeSummary,
@@ -768,6 +794,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   expect(commands).toHaveBeenLastCalledWith("start_commit_review", {
     checkout : main.path,
     comparison,
+    selection,
     layout   : null,
     fileIndex: 0,
   });
@@ -780,15 +807,16 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   await vi.waitFor(() => {
     expect(target.querySelector("[aria-label='File diffs']")).toBeNull();
   });
-  element(target, ".saved-reviews > summary").click();
-  element(target, "[aria-label='Saved commit reviews'] button").click();
+  chooseSource(target, "refs/heads/main");
   await vi.waitFor(() => {
     expect(target.querySelector("#file-review-0 pre")).toBeNull();
     expect(target.querySelector("#file-review-1 pre")?.textContent).toBe("+second\n");
   });
-  expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
+  expect(commands).toHaveBeenLastCalledWith("compare_revisions", {
     checkout: linked.path,
-    id      : 7,
+    base    : "refs/heads/main",
+    target  : "HEAD",
+    mode    : "between",
   });
   expect(target.querySelector<HTMLInputElement>(firstMark)?.checked).toBe(true);
   expect(element(target, "#review-progress").textContent).toBe("1 of 2 reviewed");
@@ -799,7 +827,7 @@ it("saves the displayed comparison and resumes shared review progress from anoth
   await vi.waitFor(() => {
     expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
   });
-  expect(element(target, "[aria-label='Saved commit reviews'] button").textContent).toContain("Reviewed");
+  expect(target.textContent).not.toContain("Saved reviews");
   expect(commands).toHaveBeenLastCalledWith("set_commit_file_reviewed", {
     checkout : linked.path,
     id       : 7,
@@ -812,58 +840,6 @@ it("saves the displayed comparison and resumes shared review progress from anoth
     expect(target.querySelector("#review-progress")?.textContent).toBe("1 of 2 reviewed");
   });
   expect(element(target, `${ file }:nth-of-type(2)`).textContent).toContain("Unreviewed");
-});
-
-it("opens a project's saved review directly after startup", async () => {
-  const summary = {
-    id           : 7,
-    baseLabel    : "main",
-    targetLabel  : "topic",
-    start        : "ancestor",
-    end          : "topictip",
-    fileCount    : 0,
-    reviewedCount: 0,
-  };
-  const comparison = {
-    baseLabel  : summary.baseLabel,
-    targetLabel: summary.targetLabel,
-    base       : "basetip",
-    mode       : "divergence",
-    start      : summary.start,
-    end        : summary.end,
-    files      : [],
-  };
-  const commands = revisionCommands;
-  commands
-    .mockResolvedValueOnce([
-      {
-        ...project,
-        savedReviews: [summary],
-      },
-    ])
-    .mockResolvedValueOnce(revisions)
-    .mockResolvedValueOnce({
-      comparison,
-      summary,
-      reviewedFiles: [],
-    });
-
-  const target = render();
-  const reviewButton = "[aria-label='Saved commit reviews'] button";
-  await vi.waitFor(() => {
-    expect(target.querySelector(reviewButton)?.textContent).toContain("Reviewed");
-  });
-  element(target, ".saved-reviews > summary").click();
-  element(target, reviewButton).click();
-  await vi.waitFor(() => {
-    expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed");
-  });
-  expect(element(target, ".revision-picker .target > summary").textContent).toContain("topic");
-  expect(target.textContent).toContain("No differences.");
-  expect(commands).toHaveBeenLastCalledWith("open_commit_review", {
-    checkout: main.path,
-    id      : 7,
-  });
 });
 
 it("reviews separate staged and unstaged patches and refreshes the active worktree", async () => {
@@ -1273,12 +1249,29 @@ it("scopes the dedicated settings screen and returns to the same review position
   element(screen, "nav button:first-child").click();
   await vi.waitFor(() => expect(screen.textContent).toContain("Default diff layout"));
   selectScope("another");
-  expect(screen.textContent).not.toContain("General");
+  expect(screen.querySelector("h1")?.textContent).toBe("File categories");
   expect(screen.textContent).toContain("File categories");
   await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("read_category_settings", {
     mainCheckout: otherProject.mainCheckout,
     paths       : [],
   }));
+
+  element(screen, "nav button:first-child").click();
+  const days = "#review-retention-days";
+  await vi.waitFor(() => expect(screen.querySelector<HTMLInputElement>(days)?.value).toBe("7"));
+  expect(screen.textContent).not.toContain("Default diff layout");
+  const limit = screen.querySelector<HTMLInputElement>(days);
+  if (!limit) throw new Error("Missing review inactivity limit");
+  limit.value = "14";
+  limit.dispatchEvent(new Event("input", { bubbles: true }));
+  flushSync();
+  element(screen, "form.retention").dispatchEvent(new SubmitEvent("submit", {
+    bubbles   : true,
+    cancelable: true,
+  }));
+  await vi.waitFor(() => expect(screen.textContent).toContain("Use global setting"));
+  element(screen, "form button[type=button]").click();
+  await vi.waitFor(() => expect(limit.value).toBe("7"));
 
   element(screen, "button[aria-label='Back to review']").click();
   await vi.waitFor(() => expect(target.contains(screen)).toBe(false));
@@ -1286,6 +1279,71 @@ it("scopes the dedicated settings screen and returns to the same review position
   expect(stream.scrollTop).toBe(scrollPosition);
   expect(element(target, secondFile).getAttribute("aria-pressed")).toBe("true");
   expect(document.activeElement).toBe(gear);
+});
+
+it("shows an update beside Refresh without moving the pinned comparison", async () => {
+  const selection = {
+    base  : "refs/heads/main",
+    target: "refs/heads/topic",
+    mode  : "divergence",
+  };
+  const pinned = {
+    baseLabel  : "main",
+    targetLabel: "HEAD",
+    mode       : "divergence",
+    base       : "mainsha",
+    start      : "mainsha",
+    end        : "oldsha",
+    layout     : null,
+    update     : "current",
+    progress   : null,
+    selection,
+    files      : [
+      {
+        status      : "A",
+        path        : "one.txt",
+        previousPath: null,
+        patch       : "+pinned\n",
+      },
+    ],
+  };
+  revisionCommands
+    .mockResolvedValueOnce([project])
+    .mockResolvedValueOnce({
+      ...revisions,
+      defaultBranch: selection.base,
+      currentBranch: selection.target,
+    })
+    .mockResolvedValueOnce(pinned)
+    .mockResolvedValueOnce({
+      ...pinned,
+      end  : "newsha",
+      files: [
+        {
+          ...pinned.files[0],
+          patch: "+latest\n",
+        },
+      ],
+    });
+  comparisonStatus.mockResolvedValueOnce("available");
+
+  const target = render();
+  const worktree = await vi.waitFor(() => element(target, "aside ul button"));
+  worktree.click();
+  await vi.waitFor(() => expect(target.querySelector("pre")?.textContent).toContain("pinned"));
+  globalThis.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => expect(target.textContent).toContain("Update available"));
+  expect(target.querySelector("pre")?.textContent).toContain("pinned");
+  element(target, "#worktree-review").click();
+  await vi.waitFor(() => expect(target.querySelector("pre")?.textContent).toContain("latest"));
+  expect(target.textContent).not.toContain("Update available");
+  expect(revisionCommands).toHaveBeenLastCalledWith("compare_revisions", {
+    checkout: main.path,
+    base    : selection.base,
+    target  : selection.target,
+    mode    : selection.mode,
+    refresh : true,
+  });
 });
 
 it("applies global layout changes to an inherited review and reopens an explicit saved choice", async () => {
@@ -1312,7 +1370,7 @@ it("applies global layout changes to an inherited review and reopens an explicit
     start        : comparison.start,
     end          : comparison.end,
     fileCount    : 1,
-    reviewedCount: 0,
+    reviewedCount: 1,
   };
   revisionCommands
     .mockResolvedValueOnce([project])
@@ -1324,11 +1382,13 @@ it("applies global layout changes to an inherited review and reopens an explicit
     })
     .mockResolvedValueOnce(revisions)
     .mockResolvedValueOnce({
-      comparison,
-      summary,
-      reviewedFiles: [0],
+      ...comparison,
+      layout  : "unified",
+      progress: {
+        summary,
+        reviewedFiles: [0],
+      },
     });
-  layoutCommands.mockResolvedValueOnce(null).mockResolvedValueOnce("unified");
 
   const target = render();
   await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
@@ -1340,8 +1400,7 @@ it("applies global layout changes to an inherited review and reopens an explicit
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
 
   element(target, ".file-stream input[type=checkbox]").click();
-  const saved = "[aria-label='Saved commit reviews'] button";
-  await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
+  await vi.waitFor(() => expect(target.querySelector("#review-progress")?.textContent).toBe("Reviewed"));
   element(target, "#file-review-0 h2 button").click();
   element(target, "#projects footer button[title=Settings]").click();
   const screen = await vi.waitFor(() => element(target, "main[aria-label=Settings]"));
@@ -1370,8 +1429,7 @@ it("applies global layout changes to an inherited review and reopens an explicit
 
   element(target, "aside ul button").click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeNull());
-  element(target, ".saved-reviews > summary").click();
-  element(target, saved).click();
+  chooseSource(target, "abc123");
   await vi.waitFor(() => expect(target.querySelector("#file-review-0 h2 button")).toBeTruthy());
   element(target, "#file-review-0 h2 button").click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());

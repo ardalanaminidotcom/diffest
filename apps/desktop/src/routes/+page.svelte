@@ -1,12 +1,14 @@
 <script lang="ts">
 import type {
-  CommitReview,
   CommitReviewProgress,
   Comparison,
   ComparisonMode,
+  ComparisonSession,
+  ComparisonUpdate,
   DiffLayout,
   Project,
   Registration,
+  ReviewSelection,
   Revisions,
   StageWorktreePatchResult,
   WorktreePatch,
@@ -41,11 +43,17 @@ type OpenReview
     kind: "comparison";
     comparison: Comparison;
     progress: CommitReviewProgress | null;
+    selection: ReviewSelection;
   }
   | {
     kind: "worktree";
     patches: WorktreePatch[];
   };
+
+interface ComparisonOptions {
+  mode: ComparisonMode;
+  refresh?: ReviewSelection | null;
+}
 
 interface ReviewPosition {
   file: HTMLElement;
@@ -82,7 +90,9 @@ const selectedIndex = $derived(jumpedFileIndex ?? orderedIndices[0] ?? 0);
 const selectedWorktreePatch = $derived(worktreeReview?.[selectedIndex]);
 let error = $state("");
 let busy = $state(false);
-let savedReviewsOpen = $state(false);
+let comparisonUpdate = $state<ComparisonUpdate>("current");
+const comparisonUpdateInterval = 5000;
+let checkingUpdate = false;
 let sourceOpen = $state(false);
 let filesCollapsed = $state(false);
 const filesAction = $derived(filesCollapsed ? "Open Files sidebar" : "Collapse Files sidebar");
@@ -197,11 +207,39 @@ async function run(action: () => Promise<void>): Promise<void> {
   }
 }
 
+async function checkComparisonUpdate(): Promise<void> {
+  const current = openReviewState;
+  const session = reviewSession;
+  if (checkingUpdate || current?.kind !== "comparison" || comparisonUpdate === "branch_deleted") return;
+
+  checkingUpdate = true;
+  try {
+    const status = await invoke<ComparisonUpdate>("comparison_update", {
+      checkout : activeCheckout,
+      selection: current.selection,
+      base     : current.comparison.base,
+      end      : current.comparison.end,
+    });
+    if (session === reviewSession) comparisonUpdate = status;
+  } catch {
+    // Keep the last known state when Git is temporarily unavailable.
+  } finally {
+    checkingUpdate = false;
+  }
+}
+
 onMount(() => {
   void run(async () => {
     projects = await invoke<Project[]>("list_projects");
   });
+  const timer = globalThis.setInterval(() => void checkComparisonUpdate(), comparisonUpdateInterval);
+  return () => globalThis.clearInterval(timer);
 });
+
+async function leaveComparison(): Promise<void> {
+  if (review) await invoke("leave_comparison_review");
+  comparisonUpdate = "current";
+}
 
 function readReviewLayout(path: string, id: number | null): Promise<DiffLayout | null> {
   return invoke("read_review_layout", {
@@ -230,30 +268,38 @@ function showWorktreeReview(patches: WorktreePatch[], side = selectedWorktreePat
   };
 }
 
-async function displayComparison(source: string, destination: string, comparisonMode: ComparisonMode): Promise<void> {
+async function displayComparison(
+  source: string,
+  destination: string,
+  { mode: comparisonMode, refresh }: ComparisonOptions,
+): Promise<void> {
   if (!source) {
+    await leaveComparison();
     layoutOverride = null;
     openReviewState = null;
-  } else if (destination === "Working tree" && (source === "HEAD" || source === revisions?.currentBranch)) {
+  } else if (!refresh && destination === "Working tree" && (source === "HEAD" || source === revisions?.currentBranch)) {
     const patches = await invoke<WorktreePatch[]>("open_worktree_review", { checkout: activeCheckout });
-    layoutOverride = await readReviewLayout(activeCheckout, null);
+    const override = await readReviewLayout(activeCheckout, null);
+    await leaveComparison();
+    layoutOverride = override;
     showWorktreeReview(patches);
   } else {
-    const { progress, ...displayed } = await invoke<Comparison & { progress: CommitReviewProgress | null; }>(
-      "compare_revisions",
-      {
+    const { progress, selection, update, layout: override, ...displayed }
+      = await invoke<ComparisonSession>("compare_revisions", {
         checkout: activeCheckout,
-        base    : source,
-        target  : destination,
+        base    : refresh?.base ?? source,
+        target  : refresh?.target ?? destination,
         mode    : comparisonMode,
-      },
-    );
-    layoutOverride = progress ? await readReviewLayout(activeCheckout, progress.summary.id) : null;
+        ...refresh ? { refresh: true } : {},
+      });
+    layoutOverride = override ?? (refresh ? layoutOverride : null);
     openReviewState = {
       kind      : "comparison",
       comparison: displayed,
       progress  : progress ?? null,
+      selection,
     };
+    comparisonUpdate = update;
   }
   base = source;
   target = destination;
@@ -263,11 +309,12 @@ async function displayComparison(source: string, destination: string, comparison
 }
 
 function compare(source: string, destination: string, comparisonMode: ComparisonMode): void {
-  void run(() => displayComparison(source, destination, comparisonMode));
+  void run(() => displayComparison(source, destination, { mode: comparisonMode }));
 }
 
-async function openWorktree(path: string, projectId: number, loadChanges = true): Promise<void> {
+async function openWorktree(path: string, projectId: number): Promise<void> {
   const nextRevisions = await invoke<Revisions>("open_worktree", { checkout: path });
+  await leaveComparison();
   layoutOverride = null;
   filesCollapsed = false;
   revisions = nextRevisions;
@@ -280,11 +327,10 @@ async function openWorktree(path: string, projectId: number, loadChanges = true)
   sourceOpen = false;
   openReviewState = null;
   startFileStream();
-  if (!loadChanges) return;
 
   const { defaultBranch, currentBranch } = nextRevisions;
   if (defaultBranch && currentBranch !== defaultBranch) {
-    await displayComparison(defaultBranch, "HEAD", "divergence");
+    await displayComparison(defaultBranch, "HEAD", { mode: "divergence" });
     return;
   }
 
@@ -313,68 +359,29 @@ function reviewStatus(fileCount: number, reviewedCount: number): string {
   return fileCount === reviewedCount ? "Reviewed" : `${ reviewedCount } of ${ fileCount } reviewed`;
 }
 
-function updateReview(displayed: Comparison, progress: CommitReviewProgress): void {
-  openReviewState = {
-    kind      : "comparison",
-    comparison: displayed,
-    progress,
-  };
-  const { summary } = progress;
-  projects = projects.map((project) => {
-    if (project.id !== activeProjectId) return project;
-
-    return {
-      ...project,
-      savedReviews: [...project.savedReviews.filter(item => item.id !== summary.id), summary]
-        .toSorted((first, second) => second.id - first.id),
-    };
-  });
-}
-
-function openReview(project: Project, id: number): void {
-  const path = project.id === activeProjectId ? activeCheckout : project.worktrees[0]?.path;
-  if (!path) return;
-
-  void run(async () => {
-    if (path !== activeCheckout) await openWorktree(path, project.id, false);
-
-    const saved = await invoke<CommitReview>("open_commit_review", {
-      checkout: path,
-      id,
-    });
-    layoutOverride = await readReviewLayout(path, id);
-    const { comparison: displayed, summary, reviewedFiles: marks } = saved;
-    base = displayed.baseLabel;
-    target = displayed.targetLabel;
-    mode = displayed.mode;
-    savedReviewsOpen = false;
-    filesCollapsed = false;
-    sourceOpen = false;
-    startFileStream();
-    updateReview(displayed, {
-      summary,
-      reviewedFiles: marks,
-    });
-    await revealProject(project.id);
-  });
-}
-
 function markFile(displayed: Comparison, fileIndex: number): void {
   void run(async () => {
-    const progress = review
-      ? await invoke<CommitReviewProgress>("set_commit_file_reviewed", {
+    const current = openReviewState;
+    if (current?.kind !== "comparison" || comparisonUpdate === "branch_deleted") return;
+
+    const progress = current.progress
+      ? await invoke<CommitReviewProgress | null>("set_commit_file_reviewed", {
           checkout: activeCheckout,
-          id      : review.summary.id,
+          id      : current.progress.summary.id,
           fileIndex,
           reviewed: !reviewedFiles.has(fileIndex),
         })
       : await invoke<CommitReviewProgress>("start_commit_review", {
           checkout  : activeCheckout,
           comparison: displayed,
+          selection : current.selection,
           layout    : layoutOverride,
           fileIndex,
         });
-    updateReview(displayed, progress);
+    openReviewState = {
+      ...current,
+      progress,
+    };
   });
 }
 
@@ -390,6 +397,7 @@ function fetchBranches(): void {
       // Another remote may have succeeded before Git reported the error.
       revisions = await invoke<Revisions>("open_worktree", { checkout: activeCheckout }).catch(() => revisions);
     }
+    await checkComparisonUpdate();
   });
 }
 
@@ -400,7 +408,13 @@ function refreshComparison(): void {
     return;
   }
   if (target !== "Working tree" || !worktreeReview) {
-    if (base) compare(base, target, mode);
+    if (base) {
+      const selection = openReviewState?.kind === "comparison" ? openReviewState.selection : null;
+      void run(() => displayComparison(base, target, {
+        mode,
+        refresh: selection,
+      }));
+    }
     return;
   }
   void run(async () => {
@@ -414,7 +428,8 @@ function switchLayout(next: DiffLayout): void {
   if (next === layout) return;
 
   void run(async () => {
-    if (review || worktreeReview) {
+    const hasSavedReview = review && comparisonUpdate !== "branch_deleted";
+    if (hasSavedReview || worktreeReview) {
       await invoke("set_review_layout", {
         checkout: activeCheckout,
         id      : review?.summary.id ?? null,
@@ -456,7 +471,10 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 }
 </script>
 
-<svelte:window onfocus={refreshReviewSettings} />
+<svelte:window onfocus={() => {
+  void refreshReviewSettings();
+  void checkComparisonUpdate();
+}} />
 
 <main class:projects-collapsed={projectsCollapsed} inert={settingsOpen}>
   <header class="app-bar">
@@ -486,38 +504,14 @@ function stageWorktreePatch(patch: WorktreePatch): void {
             </button>
           </div>
         {/if}
-        {#if projects.some(project => project.savedReviews.length > 0)}
-          <details name="workspace-menu" class="toolbar-disclosure saved-reviews" bind:open={savedReviewsOpen}>
-            <summary>Saved reviews</summary>
-            <div class="toolbar-panel">
-              {#each projects as project (project.id)}
-                {#if project.savedReviews.length}
-                  <section aria-label="Saved commit reviews">
-                    <h3>{project.name}</h3>
-                    <ul>
-                      {#each project.savedReviews as saved (saved.id)}
-                        <li>
-                          <button
-                            type="button"
-                            aria-pressed={review?.summary.id === saved.id}
-                            onclick={() => openReview(project, saved.id)}
-                            disabled={busy || !project.worktrees.length}>
-                            {saved.baseLabel.replace(/^refs\/(heads|remotes)\//u, "")} ← {saved.targetLabel}
-                            <small><code>{saved.start.slice(0, 7)} ← {saved.end.slice(0, 7)}</code></small>
-                            <small>{reviewStatus(saved.fileCount, saved.reviewedCount)}</small>
-                          </button>
-                        </li>
-                      {/each}
-                    </ul>
-                  </section>
-                {/if}
-              {/each}
-            </div>
-          </details>
-        {/if}
-        {#if revisions && !review}
+        {#if revisions}
+          {#if comparisonUpdate === "available" || comparisonUpdate === "branch_deleted"}
+            <span class="comparison-update" role="status">
+              {comparisonUpdate === "available" ? "Update available" : "Branch deleted"}
+            </span>
+          {/if}
           <button id="worktree-review" class="icon-button refresh" type="button" onclick={refreshComparison}
-            aria-label="Refresh comparison" title="Refresh comparison" disabled={busy}>
+            aria-label="Refresh comparison" title="Refresh comparison" disabled={busy || comparisonUpdate === "branch_deleted"}>
             <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M13 7a5 5 0 1 0-.5 4M13 3v4H9" /></svg>
           </button>
         {/if}
@@ -602,7 +596,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
             {/if}
             {#each orderedIndices as index (worktreeReview?.[index]?.fingerprint ?? index)}
               {@const patch = worktreeReview?.[index]}
-              <ReviewFile {index} file={files[index]} {patch} checkout={activeCheckout} {comparison} {layout} {busy}
+              <ReviewFile {index} file={files[index]} {patch} checkout={activeCheckout} {comparison} {layout} busy={busy || comparisonUpdate === "branch_deleted"}
                 {windowRows}
                 reviewed={patch?.reviewed ?? reviewedFiles.has(index)}
                 onreview={() => toggleFileReviewed(index)} onstage={stageWorktreePatch} />
@@ -742,7 +736,7 @@ main.projects-collapsed { grid-template-columns: 0px minmax(0, 1fr); }
 .app-bar-content { min-width: 0; }
 .projects-toggle { flex: none; color: var(--accent); }
 .files-toggle[aria-expanded="true"] { background: var(--selection); color: var(--accent); }
-h1, h2, h3, p { margin: 0; }
+h1, h2, p { margin: 0; }
 h1 { display: flex; align-items: center; gap: 0.45rem; font-size: 1rem; }
 h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1.4; }
 .project-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -750,30 +744,10 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
 
 .workspace-actions { margin-inline-start: auto; flex: 0 1 auto; min-width: 0; }
 .refresh { flex: none; }
-.toolbar-disclosure > summary {
-  cursor: pointer;
-  list-style: none;
-  background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 0.3rem 0.52rem;
-  font-size: 0.85rem;
-}
-.toolbar-disclosure > summary::-webkit-details-marker { display: none; }
-.toolbar-disclosure[open] > summary { background: var(--selection); }
-.toolbar-panel {
-  position: absolute;
-  inset: 100% 0 auto auto;
-  z-index: 2;
-  box-sizing: border-box;
-  width: min(100%, 24rem);
-  max-height: min(65dvh, calc(100dvh - 9rem));
-  overflow: auto;
-  padding: 0.85rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0 0 0 8px;
-  box-shadow: 0 6px 18px #0002;
+.comparison-update {
+  color: var(--accent);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 .projects-column, .workspace, .changes, .file-stream { min-width: 0; min-height: 0; }
 .projects-column { grid-column: 1; grid-row: 1 / -1; overflow: clip; }
@@ -821,11 +795,10 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
   border-block-end: 1px solid var(--border);
   font-weight: 700;
 }
-.saved-reviews h3 { margin-block: 1rem 0.35rem; font-size: 0.85rem; overflow-wrap: anywhere; }
-aside ul, .saved-reviews ul { list-style: none; padding: 0; margin: 0; }
+aside ul { list-style: none; padding: 0; margin: 0; }
 .project-list ul { padding-inline-start: 0.45rem; }
-aside li + li, .saved-reviews li + li { margin-block-start: 0.2rem; }
-aside li button, .saved-reviews li button {
+aside li + li { margin-block-start: 0.2rem; }
+aside li button {
   display: block;
   width: 100%;
   text-align: start;
@@ -833,7 +806,7 @@ aside li button, .saved-reviews li button {
   background: transparent;
   border-color: transparent;
 }
-aside small, .saved-reviews small { display: block; }
+aside small { display: block; }
 small { color: var(--muted); font-size: 0.85rem; }
 button {
   min-width: 0;

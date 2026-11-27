@@ -1,7 +1,7 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { Categorization, CategoryRule, CategoryRuleDraft } from "./category-settings.js";
-import type { DiffLayout, Project } from "./revisions.js";
+import type { DiffLayout, Project, ReviewRetention } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
 import { onMount } from "svelte";
 import CategoryRuleForm from "./category-rule-form.svelte";
@@ -22,27 +22,39 @@ const checkout = $derived(configurableProjects.find(project => project.id.toStri
 let loadedCheckout = $state<string | null>();
 let settings = $state<Categorization>();
 let error = $state("");
+let retention = $state<ReviewRetention>();
+let retentionDays = $state<number>();
+let retentionError = $state("");
+const maxRetentionDays = 4_294_967_295;
+const validDays = $derived(typeof retentionDays === "number" && Number.isInteger(retentionDays)
+  && retentionDays >= 1 && retentionDays <= maxRetentionDays);
 let pendingRead = 0;
 let saving = $state(false);
 let backButton: HTMLButtonElement;
 let scopePicker: HTMLSelectElement;
 const currentSettings = $derived(loadedCheckout === checkout ? settings : null);
 const tier = $derived(checkout === null ? currentSettings?.global : currentSettings?.project);
-const showGeneral = $derived(checkout === null && section === "general");
+const showGeneral = $derived(section === "general");
 
 onMount(() => backButton.focus({ preventScroll: true }));
 
 async function load(mainCheckout: string | null): Promise<void> {
   const request = ++pendingRead;
   try {
-    const response = await invoke<Categorization>("read_category_settings", {
-      mainCheckout,
-      paths: [],
-    });
+    const [response, reviewRetention] = await Promise.all([
+      invoke<Categorization>("read_category_settings", {
+        mainCheckout,
+        paths: [],
+      }),
+      invoke<ReviewRetention>("read_review_retention", { mainCheckout }),
+    ]);
     if (request !== pendingRead) return;
 
+    const pristine = retentionDays === retention?.days;
+    if (loadedCheckout !== mainCheckout || pristine) retentionDays = reviewRetention.days;
     loadedCheckout = mainCheckout;
     settings = response;
+    retention = reviewRetention;
     error = "";
   } catch (error_) {
     if (request === pendingRead) error = String(error_);
@@ -56,6 +68,7 @@ function refresh(): void {
 $effect(() => {
   const mainCheckout = checkout;
   error = "";
+  retentionError = "";
   void load(mainCheckout);
 });
 
@@ -75,6 +88,25 @@ function saveRules(version: string, rules: CategoryRule[] | null): Promise<void>
     version,
     rules,
   }));
+}
+
+async function changeRetention(days: number | null): Promise<void> {
+  if (saving) return;
+
+  saving = true;
+  pendingRead++;
+  retentionError = "";
+  try {
+    retention = await invoke<ReviewRetention>("save_review_retention", {
+      mainCheckout: checkout,
+      days,
+    });
+    retentionDays = retention.days;
+  } catch (error_) {
+    retentionError = String(error_);
+  } finally {
+    saving = false;
+  }
 }
 
 async function changeLayout(layout: DiffLayout): Promise<void> {
@@ -109,13 +141,11 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
       </button>
     </header>
     <nav aria-label="Settings sections">
-      {#if checkout === null}
-        <button type="button" class="nav-button" aria-current={showGeneral ? "page" : undefined}
-          disabled={saving} onclick={() => section = "general"}>
-          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4h11m-11 4h11m-11 4h11M6 2.6v2.8m4 1.2v2.8M6 10.6v2.8" /></svg>
-          General
-        </button>
-      {/if}
+      <button type="button" class="nav-button" aria-current={showGeneral ? "page" : undefined}
+        disabled={saving} onclick={() => section = "general"}>
+        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4h11m-11 4h11m-11 4h11M6 2.6v2.8m4 1.2v2.8M6 10.6v2.8" /></svg>
+        General
+      </button>
       <button type="button" class="nav-button" aria-current={!showGeneral ? "page" : undefined}
         disabled={saving} onclick={() => section = "categories"}>
         <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M1.8 4.6a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5H13a1.2 1.2 0 0 1 1.2 1.2v5.6a1.2 1.2 0 0 1-1.2 1.2H3a1.2 1.2 0 0 1-1.2-1.2Z" /></svg>
@@ -156,7 +186,7 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
       <section class="settings-content" aria-labelledby="settings-section-title">
         {#if showGeneral}
           <h1 id="settings-section-title">General</h1>
-          {#if currentSettings}
+          {#if checkout === null && currentSettings}
             <div class="setting">
               <div>
                 <h2>Default diff layout</h2>
@@ -169,6 +199,30 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
                   disabled={saving || !tier?.version} onclick={() => changeLayout("split")}>Split</button>
               </div>
             </div>
+          {/if}
+          {#if currentSettings && retention}
+            <form class="setting retention" onsubmit={(event) => {
+              event.preventDefault();
+              if (validDays) void changeRetention(retentionDays ?? null);
+            }}>
+              <div>
+                <h2><label for="review-retention-days">Review inactivity limit</label></h2>
+                <p>Remove unfinished commit reviews after this many days away.</p>
+                {#if checkout !== null && retention.overrideDays === null}
+                  <p>Using the global setting.</p>
+                {/if}
+                {#if retentionError}<p role="alert">{retentionError}</p>{/if}
+              </div>
+              <div class="retention-controls">
+                <input id="review-retention-days" type="number" min="1" max={maxRetentionDays} step="1"
+                  bind:value={retentionDays} required disabled={saving} />
+                <button type="submit" disabled={saving || !validDays
+                  || (retentionDays === retention.days && (checkout === null || retention.overrideDays !== null))}>Save</button>
+                {#if checkout !== null && retention.overrideDays !== null}
+                  <button type="button" disabled={saving} onclick={() => changeRetention(null)}>Use global setting</button>
+                {/if}
+              </div>
+            </form>
           {/if}
         {:else}
           <h1 id="settings-section-title">File categories</h1>
@@ -290,5 +344,21 @@ footer svg { color: var(--accent); width: 1.125rem; height: 1.125rem; }
   .settings-screen { grid-template-columns: max(7rem, 24vw) minmax(0, 1fr); }
   .settings-bar, .settings-content { padding-inline: 0.7rem; }
   .back-bar, nav { padding-inline: 0.25rem; }
+}
+.retention-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.retention input {
+  inline-size: 5rem;
+  box-sizing: border-box;
+  font: inherit;
+  color: inherit;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.3rem 0.45rem;
 }
 </style>

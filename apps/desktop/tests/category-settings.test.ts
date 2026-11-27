@@ -33,7 +33,6 @@ function render(): HTMLDivElement {
           mainCheckout : "/repos/main",
           worktrees    : [],
           worktreeError: null,
-          savedReviews : [],
         },
       ],
       drafts : {},
@@ -75,7 +74,7 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
     },
     categories: [],
   };
-  vi.mocked(invoke)
+  const commands = vi.fn()
     .mockReset()
     .mockResolvedValueOnce(read)
     .mockResolvedValueOnce(read)
@@ -88,6 +87,12 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
         custom : true,
       },
     });
+  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
+    ? Promise.resolve({
+        days        : 7,
+        overrideDays: null,
+      })
+    : commands(command, parameters));
 
   const target = render();
   const picker = target.querySelector<HTMLSelectElement>("select");
@@ -144,7 +149,7 @@ it("saves new global category and subcategory labels and resets to the built-in 
     category   : "Fixtures",
     subcategory: "Golden",
   };
-  vi.mocked(invoke)
+  const commands = vi.fn()
     .mockReset()
     .mockResolvedValueOnce(inherited)
     .mockResolvedValueOnce(null)
@@ -167,6 +172,12 @@ it("saves new global category and subcategory labels and resets to the built-in 
       },
     })
     .mockResolvedValue(inherited);
+  vi.mocked(invoke).mockImplementation((command, parameters) => command === "read_review_retention"
+    ? Promise.resolve({
+        days        : 7,
+        overrideDays: null,
+      })
+    : commands(command, parameters));
 
   const target = render();
   button(target, "File categories").click();
@@ -245,11 +256,17 @@ it("groups adjacent category rules without moving rules across an intervening ca
     project   : null,
     categories: [],
   };
-  vi.mocked(invoke).mockReset()
+  const commands = vi.fn()
     .mockResolvedValueOnce(snapshot)
     .mockResolvedValueOnce(null)
     .mockResolvedValue(snapshot);
 
+  vi.mocked(invoke).mockImplementation((command, parameters) => (command === "read_review_retention"
+    ? Promise.resolve({
+        days        : 7,
+        overrideDays: null,
+      })
+    : commands(command, parameters)));
   const target = render();
   button(target, "File categories").click();
   const form = await vi.waitFor(() => {

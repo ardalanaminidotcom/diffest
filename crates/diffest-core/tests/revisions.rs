@@ -724,16 +724,14 @@ fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves()
     drop(app);
 
     let app = Application::new(database);
-    let projects = app.list_projects().unwrap();
-    assert_eq!(projects[0].saved_reviews.len(), 1);
-    let summary = &projects[0].saved_reviews[0];
+    let reopened = app.open_commit_review(&linked, saved).unwrap();
+    let summary = &reopened.summary;
     assert_eq!(summary.id, saved);
     assert_eq!(summary.base_label, "main");
     assert_eq!(summary.target_label, "topic");
     assert_eq!(summary.file_count, 2);
     assert_eq!(summary.reviewed_count, 1);
 
-    let reopened = app.open_commit_review(&linked, saved).unwrap();
     assert_eq!(reopened.comparison.base, main_tip);
     assert_eq!(reopened.comparison.start, ancestor);
     assert_eq!(reopened.comparison.end, topic_tip);
@@ -751,14 +749,12 @@ fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves()
         comparison.files[1].patch
     );
     assert_eq!(reopened.reviewed_files, [0]);
-    assert_eq!(&reopened.summary, summary);
 
     let updated = app
         .update_commit_file_review(&linked, saved, 1, true)
         .unwrap();
     assert_eq!(updated.reviewed_files, [0, 1]);
-    let projects = app.list_projects().unwrap();
-    let completed = &projects[0].saved_reviews[0];
+    let completed = &app.open_commit_review(&linked, saved).unwrap().summary;
     assert_eq!(completed.reviewed_count, completed.file_count);
     assert_eq!(&updated.summary, completed);
 
@@ -772,7 +768,10 @@ fn a_saved_divergence_comparison_reopens_from_a_sibling_after_the_branch_moves()
         [1]
     );
     assert_eq!(
-        app.list_projects().unwrap()[0].saved_reviews[0].reviewed_count,
+        app.open_commit_review(&linked, saved)
+            .unwrap()
+            .summary
+            .reviewed_count,
         1
     );
 
@@ -1086,4 +1085,166 @@ fn fetch_discovers_remote_targets_without_switching_the_checkout() {
         )
         .unwrap();
     assert_eq!(comparison.files[0].path, "notes.txt");
+
+    let active = app
+        .open_comparison(
+            &checkout,
+            "HEAD",
+            "origin/release",
+            ComparisonMode::Between,
+            false,
+        )
+        .unwrap();
+    let review = app
+        .start_comparison_review(&checkout, &active.selection, &active.comparison, None, 0)
+        .unwrap();
+    git(&checkout, &["tag", "local-only"]);
+    git(
+        &checkout,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/tags/*:refs/tags/*",
+        ],
+    );
+    git(&upstream, &["switch", "main"]);
+    git(&upstream, &["branch", "-D", "release"]);
+    assert!(
+        app.fetch_revisions(&checkout)
+            .unwrap()
+            .remote_branches
+            .is_empty()
+    );
+    assert_eq!(git(&checkout, &["rev-parse", "local-only"]), head);
+    let status = app
+        .comparison_update(
+            &checkout,
+            &active.selection,
+            &active.comparison.base,
+            &active.comparison.end,
+        )
+        .unwrap();
+    assert!(status == diffest_core::ComparisonUpdate::BranchDeleted);
+    assert!(
+        app.open_commit_review(&checkout, review.summary.id)
+            .is_err()
+    );
+    assert!(active.comparison.files[0].patch.contains("+release"));
+}
+
+#[test]
+fn branch_comparisons_resume_pinned_and_refresh_only_unchanged_marks() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = init_project(temp.path());
+    fs::write(checkout.join("first.txt"), "base\n").unwrap();
+    fs::write(checkout.join("second.txt"), "base\n").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "Base"]);
+    git(&checkout, &["switch", "-c", "topic"]);
+    fs::write(checkout.join("first.txt"), "reviewed first\n").unwrap();
+    fs::write(checkout.join("second.txt"), "reviewed second\n").unwrap();
+    git(&checkout, &["commit", "-am", "Topic"]);
+    let app = Application::new(temp.path().join("reviews.sqlite3"));
+    app.register_project(&checkout).unwrap();
+
+    let open = |target, refresh| {
+        app.open_comparison(
+            &checkout,
+            "main",
+            target,
+            ComparisonMode::Divergence,
+            refresh,
+        )
+        .unwrap()
+    };
+    let initial = open("HEAD", false);
+    let old_tip = initial.comparison.end.clone();
+    let first = app
+        .start_comparison_review(&checkout, &initial.selection, &initial.comparison, None, 0)
+        .unwrap();
+    app.mark_comparison_file(&checkout, first.summary.id, 1, true)
+        .unwrap();
+    app.leave_comparison_review().unwrap();
+    fs::write(checkout.join("second.txt"), "needs another look\n").unwrap();
+    git(&checkout, &["commit", "-am", "Change second file"]);
+
+    let pinned = open("topic", false);
+    assert_eq!(pinned.comparison.end, old_tip);
+    assert_eq!(pinned.progress.unwrap().reviewed_files, [0, 1]);
+    assert_eq!(open("topic", true).progress.unwrap().reviewed_files, [0]);
+    assert!(open(&old_tip, false).progress.is_none());
+}
+
+#[test]
+fn pinned_commit_progress_expires_with_project_limits_and_clears_on_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = init_project(temp.path());
+    fs::write(checkout.join("base.txt"), "base\n").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "Base"]);
+    let base = git(&checkout, &["rev-parse", "HEAD"]);
+    for file in ["one.txt", "two.txt"] {
+        fs::write(checkout.join(file), "added\n").unwrap();
+    }
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "More files"]);
+    let tip = git(&checkout, &["rev-parse", "HEAD"]);
+
+    let database = temp.path().join("reviews.sqlite3");
+    let app = Application::new(database.clone());
+    app.register_project(&checkout).unwrap();
+    let open = || {
+        app.open_comparison(&checkout, &base, &tip, ComparisonMode::Between, false)
+            .unwrap()
+    };
+    let mark_first = || {
+        let fresh = open();
+        assert!(fresh.progress.is_none());
+        app.start_comparison_review(&checkout, &fresh.selection, &fresh.comparison, None, 0)
+            .unwrap()
+            .summary
+            .id
+    };
+    let age = |days: u32| {
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute(
+                "UPDATE comparison_selections SET last_viewed = unixepoch() - ?1 * 86400",
+                [days],
+            )
+            .unwrap();
+    };
+
+    assert_eq!(app.review_retention(Some(&checkout)).unwrap().days, 7);
+    app.save_review_retention(Some(&checkout), Some(14))
+        .unwrap();
+    mark_first();
+    app.leave_comparison_review().unwrap();
+    age(8);
+    app.save_review_retention(None, Some(3)).unwrap();
+    assert_eq!(open().progress.unwrap().reviewed_files, [0]);
+    app.leave_comparison_review().unwrap();
+    age(4);
+    let inherited = app.save_review_retention(Some(&checkout), None).unwrap();
+    assert_eq!(inherited.days, 3);
+    assert_eq!(inherited.override_days, None);
+
+    let id = mark_first();
+    age(10);
+    app.save_review_retention(None, Some(1)).unwrap();
+    let completed = app
+        .mark_comparison_file(&checkout, id, 1, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.reviewed_files, [0, 1]);
+    app.leave_comparison_review().unwrap();
+
+    let id = mark_first();
+    assert!(
+        app.mark_comparison_file(&checkout, id, 0, false)
+            .unwrap()
+            .is_none()
+    );
+    assert!(open().progress.is_none());
 }

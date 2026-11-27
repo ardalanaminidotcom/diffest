@@ -2,9 +2,9 @@ mod category_settings;
 
 use diffest_core::category_settings::CategorySettings;
 use diffest_core::{
-    Application, CommitReview, CommitReviewProgress, Comparison, ComparisonMode, ComparisonSession,
-    DiffLayout, FileDetails, FileDetailsSource, Project, Registration, Revisions,
-    StageWorktreePatchResult, WorktreePatch,
+    Application, CommitReviewProgress, Comparison, ComparisonMode, ComparisonSession,
+    ComparisonUpdate, DiffLayout, FileDetails, FileDetailsSource, Project, Registration,
+    ReviewRetention, ReviewSelection, Revisions, StageWorktreePatchResult, WorktreePatch,
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
@@ -12,6 +12,7 @@ use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 async fn list_projects(app: State<'_, Application>) -> Result<Vec<Project>, String> {
+    app.clean_comparison_reviews()?;
     app.list_projects()
 }
 
@@ -42,6 +43,7 @@ async fn open_worktree(
     checkout: PathBuf,
 ) -> Result<Revisions, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
+    app.check_deleted_reviews(&checkout)?;
     app.open_worktree(&checkout)
 }
 
@@ -61,36 +63,40 @@ async fn compare_revisions(
     base: String,
     target: String,
     mode: ComparisonMode,
+    refresh: Option<bool>,
 ) -> Result<ComparisonSession, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    let comparison = app.compare_revisions(&checkout, &base, &target, mode)?;
-    let progress = app.find_commit_review(&checkout, &comparison)?;
-    Ok(ComparisonSession {
-        comparison,
-        progress,
-    })
+    app.open_comparison(&checkout, &base, &target, mode, refresh.unwrap_or(false))
 }
 
 #[tauri::command]
 async fn start_commit_review(
     app: State<'_, Application>,
     checkout: PathBuf,
+    selection: ReviewSelection,
     comparison: Comparison,
     layout: Option<DiffLayout>,
     file_index: usize,
 ) -> Result<CommitReviewProgress, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    app.start_commit_review(&checkout, &comparison, layout, file_index)
+    app.start_comparison_review(&checkout, &selection, &comparison, layout, file_index)
 }
 
 #[tauri::command]
-async fn open_commit_review(
+async fn comparison_update(
     app: State<'_, Application>,
     checkout: PathBuf,
-    id: i64,
-) -> Result<CommitReview, String> {
+    selection: ReviewSelection,
+    base: String,
+    end: String,
+) -> Result<ComparisonUpdate, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    app.open_commit_review(&checkout, id)
+    app.comparison_update(&checkout, &selection, &base, &end)
+}
+
+#[tauri::command]
+async fn leave_comparison_review(app: State<'_, Application>) -> Result<(), String> {
+    app.leave_comparison_review()
 }
 
 #[tauri::command]
@@ -100,9 +106,34 @@ async fn set_commit_file_reviewed(
     id: i64,
     file_index: usize,
     reviewed: bool,
-) -> Result<CommitReviewProgress, String> {
+) -> Result<Option<CommitReviewProgress>, String> {
     let checkout = app.require_registered_checkout(&checkout, false)?;
-    app.update_commit_file_review(&checkout, id, file_index, reviewed)
+    app.mark_comparison_file(&checkout, id, file_index, reviewed)
+}
+
+#[tauri::command]
+async fn read_review_retention(
+    app: State<'_, Application>,
+    main_checkout: Option<PathBuf>,
+) -> Result<ReviewRetention, String> {
+    let checkout = main_checkout
+        .as_deref()
+        .map(|path| app.require_registered_checkout(path, true))
+        .transpose()?;
+    app.review_retention(checkout.as_deref())
+}
+
+#[tauri::command]
+async fn save_review_retention(
+    app: State<'_, Application>,
+    main_checkout: Option<PathBuf>,
+    days: Option<u32>,
+) -> Result<ReviewRetention, String> {
+    let checkout = main_checkout
+        .as_deref()
+        .map(|path| app.require_registered_checkout(path, true))
+        .transpose()?;
+    app.save_review_retention(checkout.as_deref(), days)
 }
 
 #[tauri::command]
@@ -176,6 +207,11 @@ pub fn run() {
             app.manage(CategorySettings::new(&app.path().home_dir()?));
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                let _ = window.state::<Application>().leave_comparison_review();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_projects,
             register_project,
@@ -183,7 +219,10 @@ pub fn run() {
             fetch_revisions,
             compare_revisions,
             start_commit_review,
-            open_commit_review,
+            comparison_update,
+            leave_comparison_review,
+            read_review_retention,
+            save_review_retention,
             set_commit_file_reviewed,
             open_worktree_review,
             set_worktree_patch_reviewed,
@@ -195,6 +234,11 @@ pub fn run() {
             category_settings::save_category_settings,
             category_settings::save_default_diff_layout,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|handle, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                let _ = handle.state::<Application>().leave_comparison_review();
+            }
+        });
 }
