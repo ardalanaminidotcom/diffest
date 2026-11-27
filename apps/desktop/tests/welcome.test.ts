@@ -233,6 +233,51 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
 });
 
+it("preserves the scroll position relative to visible content when a diff above it changes height", async () => {
+  const patches = ["first.txt", "second.txt"].map(path => ({
+    path,
+    status      : "A",
+    previousPath: null,
+    patch       : "@@ -0,0 +1 @@\n+new line\n",
+    side        : "unstaged",
+    fingerprint : path,
+    reviewed    : false,
+  }));
+  revisionCommands.mockResolvedValueOnce([project]).mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(patches);
+  loadWorktreePatches = true;
+  const target = render();
+  await vi.waitFor(() => expect(target.querySelector("aside ul button")).toBeTruthy());
+  element(target, "aside ul button").click();
+  await vi.waitFor(() => expect(target.querySelector("#file-review-0 table")).toBeTruthy());
+
+  const stream = element(target, "[aria-label='File diffs']");
+  const firstFile = element(stream, "#file-review-0");
+  const updateVisibility = fileVisibility.get(firstFile);
+  if (!updateVisibility) throw new Error("Expected the file to be observed");
+
+  updateVisibility(false);
+  flushSync();
+  expect(firstFile.querySelector(".patch-placeholder")).toBeTruthy();
+
+  const initialScroll = 900;
+  const fileTop = 200;
+  const placeholderHeight = 600;
+  const renderedHeight = 200;
+  const fileWidth = 600;
+  stream.scrollTop = initialScroll;
+  const box = vi.spyOn(firstFile, "getBoundingClientRect").mockImplementation(() => {
+    const height = firstFile.querySelector("table") ? renderedHeight : placeholderHeight;
+    return new globalThis.DOMRect(0, fileTop - stream.scrollTop, fileWidth, height);
+  });
+  updateVisibility(true);
+  flushSync();
+
+  expect(firstFile.querySelector("table")).toBeTruthy();
+  expect(stream.scrollTop).toBe(initialScroll - placeholderHeight + renderedHeight);
+  box.mockRestore();
+});
+
 it("opens the added checkout, switches worktrees, and shows unified patches with size changes", async () => {
   const previousPathBytes = Array.from("beforeÿ.txt", character => character.codePointAt(0));
   const commands = revisionCommands;

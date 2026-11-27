@@ -2,7 +2,7 @@
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { ChangedFile, Comparison, DiffLayout, WorktreePatch } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
-import { tick, untrack } from "svelte";
+import { flushSync, tick, untrack } from "svelte";
 import DiffView from "./diff-view.svelte";
 import {
   type FileDetails,
@@ -57,23 +57,35 @@ const sizeChange = $derived.by(() => {
 });
 
 $effect(() => {
-  if (!section) return;
+  const fileSection = section;
+  const stream = fileSection?.parentElement;
+  if (!fileSection || !stream) return;
 
   // Keep file headers mounted and reserve the body height when its patch leaves the viewport.
   const observer = new globalThis.IntersectionObserver((entries) => {
     const near = entries.at(-1)?.isIntersecting === true;
-    if (!near && nearViewport && expanded && content) {
+    if (near === nearViewport) return;
+
+    const previousBottom = fileSection.getBoundingClientRect().bottom;
+    const aboveViewport = expanded && stream.scrollTop > 0 && previousBottom <= stream.getBoundingClientRect().top;
+    if (!near && expanded && content) {
       measuredBody = {
         height: content.clientHeight,
         layout,
       };
     }
     nearViewport = near;
+    if (aboveViewport) {
+      // Preserve the visible position after the swap, accounting for any native scroll anchoring.
+      flushSync();
+      const offset = fileSection.getBoundingClientRect().bottom - previousBottom;
+      if (Math.abs(offset) >= 1) stream.scrollTop += offset;
+    }
   }, {
-    root      : section.parentElement,
+    root      : stream,
     rootMargin: "240px",
   });
-  observer.observe(section);
+  observer.observe(fileSection);
   return () => observer.disconnect();
 });
 
