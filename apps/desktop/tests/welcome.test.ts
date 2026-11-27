@@ -1035,12 +1035,10 @@ it("shows numbered changes and file counts, and restores the chosen split layout
   element(target, "[aria-label='Diff layout'] button:last-child").click();
   await vi.waitFor(() => expect(target.querySelector(split)).toBeTruthy());
   const projectsToggle = ".app-bar button[aria-controls=projects]";
-  element(target, "#projects footer summary[title=Settings]").click();
   element(target, projectsToggle).click();
   flushSync();
   expect(element(target, projectsToggle).getAttribute("aria-expanded")).toBe("false");
   expect(element(target, "#projects").inert).toBe(true);
-  expect(target.querySelector("#projects footer details[open]")).toBeNull();
   expect(target.querySelector(split)).toBeTruthy();
   element(target, projectsToggle).click();
   flushSync();
@@ -1144,6 +1142,79 @@ it("keeps a mode-only image patch visible alongside its previews", async () => {
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_file_details")).toHaveLength(2);
 });
 
+it("scopes the dedicated settings screen and returns to the same review position", async () => {
+  const otherProject = {
+    ...project,
+    id          : 2,
+    name        : "another",
+    mainCheckout: "/tmp/another",
+    worktrees   : [],
+  };
+  const comparison = {
+    baseLabel  : "main",
+    targetLabel: "HEAD",
+    mode       : "between",
+    base       : "abc123",
+    start      : "abc123",
+    end        : "def456",
+    files      : ["one.txt", "two.txt"].map(path => ({
+      status      : "A",
+      path,
+      previousPath: null,
+      patch       : "@@ -0,0 +1 @@\n+new\n",
+    })),
+  };
+  revisionCommands.mockResolvedValueOnce([project, otherProject]).mockResolvedValueOnce(revisions)
+    .mockResolvedValueOnce(comparison);
+  const target = render();
+  const worktree = "#projects ul button";
+  await vi.waitFor(() => expect(target.querySelector(worktree)).toBeTruthy());
+  element(target, worktree).click();
+  await vi.waitFor(() => expect(target.querySelector("#base")).toBeTruthy());
+  chooseSource(target, "abc123");
+  const secondFile = "[aria-label='Changed files'] button[title='two.txt']";
+  await vi.waitFor(() => expect(target.querySelector(secondFile)).toBeTruthy());
+  element(target, secondFile).click();
+  const stream = element(target, "[aria-label='File diffs']");
+  const scrollPosition = 230;
+  stream.scrollTop = scrollPosition;
+
+  const gear = element(target, "#projects footer button[title=Settings]");
+  gear.click();
+  const screen = await vi.waitFor(() => element(target, "main[aria-label=Settings]"));
+  expect(screen.textContent).toContain("File categories");
+  expect(screen.textContent).not.toContain("General");
+  expect(element(target, "main:has(#projects)").inert).toBe(true);
+
+  const scope = screen.querySelector<HTMLSelectElement>("select[aria-label='Settings scope']");
+  if (!scope) throw new Error("Missing settings scope");
+  expect(scope.selectedOptions[0]?.textContent).toContain("demo");
+  const selectScope = (label: string): void => {
+    const option = [...scope.options].find(item => item.textContent.includes(label));
+    if (!option) throw new Error(`Missing scope ${ label }`);
+    scope.value = option.value;
+    scope.dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+  };
+  selectScope("Global");
+  element(screen, "nav button:first-child").click();
+  await vi.waitFor(() => expect(screen.textContent).toContain("Default diff layout"));
+  selectScope("another");
+  expect(screen.textContent).not.toContain("General");
+  expect(screen.textContent).toContain("File categories");
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("read_category_settings", {
+    mainCheckout: otherProject.mainCheckout,
+    paths       : [],
+  }));
+
+  element(screen, "button[aria-label='Back to review']").click();
+  await vi.waitFor(() => expect(target.contains(screen)).toBe(false));
+  expect(element(target, "[aria-label='File diffs']")).toBe(stream);
+  expect(stream.scrollTop).toBe(scrollPosition);
+  expect(element(target, secondFile).getAttribute("aria-pressed")).toBe("true");
+  expect(document.activeElement).toBe(gear);
+});
+
 it("applies global layout changes to an inherited review and reopens an explicit saved choice", async () => {
   const comparison = {
     baseLabel  : "main",
@@ -1199,13 +1270,21 @@ it("applies global layout changes to an inherited review and reopens an explicit
   const saved = "[aria-label='Saved commit reviews'] button";
   await vi.waitFor(() => expect(target.querySelector(saved)).toBeTruthy());
   element(target, "#file-review-0 h2 button").click();
-  element(target, "#projects footer summary[title=Settings]").click();
-  const select = target.querySelector<HTMLSelectElement>("#default-diff-layout");
-  if (!select) throw new Error("Missing default diff layout");
-  expect(select.value).toBe("unified");
-  select.value = "split";
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  element(target, "#projects footer button[title=Settings]").click();
+  const screen = await vi.waitFor(() => element(target, "main[aria-label=Settings]"));
+  const scope = screen.querySelector<HTMLSelectElement>("select[aria-label='Settings scope']");
+  if (!scope) throw new Error("Missing settings scope");
+  scope.selectedIndex = 0;
+  scope.dispatchEvent(new Event("change", { bubbles: true }));
+  flushSync();
+  element(screen, "nav button:first-child").click();
+  const splitDefault = "[aria-label='Default diff layout'] button:last-child";
+  await vi.waitFor(() => expect(element(screen, splitDefault).getAttribute("aria-pressed")).toBe("false"));
+  element(screen, splitDefault).click();
   await vi.waitFor(() => expect(target.querySelector(split)?.textContent).toContain("new"));
+  expect(element(screen, splitDefault).getAttribute("aria-pressed")).toBe("true");
+  element(screen, "button[aria-label='Back to review']").click();
+  flushSync();
 
   const unifiedButton = "[aria-label='Diff layout'] button:first-child";
   element(target, unifiedButton).click();
@@ -1223,5 +1302,4 @@ it("applies global layout changes to an inherited review and reopens an explicit
   await vi.waitFor(() => expect(target.querySelector("#file-review-0 h2 button")).toBeTruthy());
   element(target, "#file-review-0 h2 button").click();
   await vi.waitFor(() => expect(target.querySelector(unified)).toBeTruthy());
-  expect(select.value).toBe("split");
 });

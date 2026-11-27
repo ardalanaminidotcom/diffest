@@ -20,14 +20,26 @@ const rules = [
   },
 ];
 
-function render(): HTMLDivElement {
+function render(activeProjectId?: number): HTMLDivElement {
   const target = document.createElement("div");
   document.body.append(target);
   const settings = mount(CategorySettings, {
     target,
     props: {
-      mainCheckout: "/repos/main",
-      paths       : [],
+      projects: [
+        {
+          id           : 1,
+          name         : "demo",
+          mainCheckout : "/repos/main",
+          worktrees    : [],
+          worktreeError: null,
+          savedReviews : [],
+        },
+      ],
+      activeProjectId,
+      drafts : {},
+      onback : vi.fn(),
+      onsaved: vi.fn().mockResolvedValue(null),
     },
   });
   onTestFinished(async () => {
@@ -77,14 +89,14 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
       },
     });
 
-  const target = render();
+  const target = render(1);
   const form = await vi.waitFor(() => {
     const projectForm = target.querySelector<HTMLFormElement>("form[aria-label='Project category rules']");
     expect(projectForm).toBeTruthy();
     return projectForm!;
   });
   expect(form.textContent).toContain(projectPath);
-  expect(form.textContent).toContain("Inherits global rules");
+  expect(form.textContent).toContain("Inherited from Global");
   button(form, "Customize rules").click();
   flushSync();
   expect(form.querySelector<HTMLInputElement>("input[name='glob']")?.value).toBe("**/*.rs");
@@ -153,12 +165,18 @@ it("saves new global category and subcategory labels and resets to the built-in 
     .mockResolvedValue(inherited);
 
   const target = render();
+  button(target, "File categories").click();
   await vi.waitFor(() => {
-    expect(target.textContent).toContain("Inherits built-in rules");
+    expect(target.textContent).toContain("Built-in rules");
   });
   button(target, "Customize rules").click();
   flushSync();
   button(target, "Remove rule").click();
+  button(target, "General").click();
+  flushSync();
+  button(target, "File categories").click();
+  flushSync();
+  expect(target.querySelectorAll("ol li")).toHaveLength(1);
   button(target, "Add rule").click();
   flushSync();
   const values = Object.values(customRule);
@@ -180,7 +198,7 @@ it("saves new global category and subcategory labels and resets to the built-in 
   });
   button(target, "Reset to built-in rules").click();
   await vi.waitFor(() => {
-    expect(target.textContent).toContain("Inherits built-in rules");
+    expect(target.textContent).toContain("Built-in rules");
   });
   expect(invoke).toHaveBeenCalledWith("save_category_settings", {
     mainCheckout: null,

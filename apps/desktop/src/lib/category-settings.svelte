@@ -1,48 +1,52 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
-import type { Categorization, CategoryRule, FileCategory } from "./category-settings.js";
-import type { DiffLayout } from "./revisions.js";
+import type { Categorization, CategoryRule, CategoryRuleDraft } from "./category-settings.js";
+import type { DiffLayout, Project } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
+import { onMount, untrack } from "svelte";
 import CategoryRuleForm from "./category-rule-form.svelte";
 
 interface Properties {
-  mainCheckout: string | null;
-  paths: string[];
-  categories?: FileCategory[];
-  defaultLayout?: DiffLayout;
-  open?: boolean;
-  announcement?: string;
+  projects: Project[];
+  activeProjectId: number | undefined;
+  drafts: Record<string, CategoryRuleDraft | null>;
+  onback(): void;
+  onsaved(): Promise<void>;
 }
 
-let {
-  mainCheckout,
-  paths,
-  categories = $bindable([]),
-  defaultLayout = $bindable("unified"),
-  open = $bindable(false),
-  announcement = $bindable(""),
-}: Properties = $props();
+let { projects, activeProjectId, drafts, onback, onsaved }: Properties = $props();
+const configurableProjects = $derived(projects.filter(project => project.mainCheckout !== null));
+let scope = $state(untrack(() => {
+  const project = configurableProjects.find(item => item.id === activeProjectId);
+  return project?.id.toString() ?? "";
+}));
+let section = $state<"general" | "categories">(untrack(() => (scope ? "categories" : "general")));
+const checkout = $derived(configurableProjects.find(project => project.id.toString() === scope)?.mainCheckout ?? null);
+
+let loadedCheckout = $state<string | null>();
 let settings = $state<Categorization>();
-let loadedCheckout = $state<string | null>(null);
 let error = $state("");
 let pendingRead = 0;
-let requestedCheckout: string | null | undefined;
-let requestedPaths: string[] = [];
-let savingLayout = $state(false);
+let saving = $state(false);
+let backButton: HTMLButtonElement;
+let scopePicker: HTMLSelectElement;
+const currentSettings = $derived(loadedCheckout === checkout ? settings : null);
+const tier = $derived(checkout === null ? currentSettings?.global : currentSettings?.project);
+const showGeneral = $derived(checkout === null && section === "general");
 
-async function load(checkout: string | null, filePaths: string[]): Promise<void> {
+onMount(() => backButton.focus({ preventScroll: true }));
+
+async function load(mainCheckout: string | null): Promise<void> {
   const request = ++pendingRead;
   try {
     const response = await invoke<Categorization>("read_category_settings", {
-      mainCheckout: checkout,
-      paths       : filePaths,
+      mainCheckout,
+      paths: [],
     });
     if (request !== pendingRead) return;
 
+    loadedCheckout = mainCheckout;
     settings = response;
-    loadedCheckout = checkout;
-    categories = response.categories;
-    defaultLayout = response.defaultDiffLayout ?? "unified";
     error = "";
   } catch (error_) {
     if (request === pendingRead) error = String(error_);
@@ -50,168 +54,220 @@ async function load(checkout: string | null, filePaths: string[]): Promise<void>
 }
 
 function refresh(): void {
-  void load(mainCheckout, paths);
+  if (!saving) void load(checkout);
 }
 
 $effect(() => {
-  const checkout = mainCheckout;
-  const filePaths = paths;
-  if (requestedCheckout === checkout && requestedPaths.length === filePaths.length
-    && requestedPaths.every((path, index) => path === filePaths[index])) return;
-
-  requestedCheckout = checkout;
-  requestedPaths = filePaths;
-  categories = [];
-  void load(checkout, filePaths);
+  const mainCheckout = checkout;
+  error = "";
+  void load(mainCheckout);
 });
 
-async function save(checkout: string | null, version: string, rules: CategoryRule[] | null): Promise<void> {
-  await invoke("save_category_settings", {
+async function persist(action: Promise<unknown>): Promise<void> {
+  saving = true;
+  try {
+    await action;
+    await Promise.all([load(checkout), onsaved()]);
+  } finally {
+    saving = false;
+  }
+}
+
+function saveRules(version: string, rules: CategoryRule[] | null): Promise<void> {
+  return persist(invoke("save_category_settings", {
     mainCheckout: checkout,
     version,
     rules,
-  });
-  await load(mainCheckout, paths);
+  }));
 }
 
-async function changeLayout(event: Event & { currentTarget: HTMLSelectElement; }): Promise<void> {
-  const select = event.currentTarget;
-  const version = settings?.global.version;
-  if (!version) return;
+async function changeLayout(layout: DiffLayout): Promise<void> {
+  const version = tier?.version;
+  if (saving || !version || layout === currentSettings?.defaultDiffLayout) return;
 
-  savingLayout = true;
   try {
-    await invoke("save_default_diff_layout", {
+    const parameters = {
       version,
-      layout: select.value,
-    });
-    await load(mainCheckout, paths);
+      layout,
+    };
+    await persist(invoke("save_default_diff_layout", parameters));
   } catch (error_) {
     error = String(error_);
-  } finally {
-    select.value = defaultLayout;
-    savingLayout = false;
   }
 }
-const errorAnnouncement = $derived([
-  error,
-  settings?.global.error,
-  loadedCheckout === mainCheckout ? settings?.project?.error : null,
-].filter(Boolean).join(" "));
-$effect(() => {
-  announcement = errorAnnouncement;
-});
 </script>
 
-<svelte:window onfocus={refresh} />
+<svelte:window onfocus={refresh} onkeydown={(event) => {
+  if (!saving && !event.defaultPrevented && event.key === "Escape" && event.target !== scopePicker) onback();
+}} />
 
-<details name="workspace-menu" class="category-settings" bind:open>
-  <summary title="Settings" aria-label={errorAnnouncement ? "Settings, error" : "Settings"}
-    class:has-error={Boolean(errorAnnouncement)}>
-    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
-      <path d="m6.8 1.8-.4 1.4-1.1.6-1.4-.4-1.2 2 .9 1.2v1.3l-.9 1.2 1.2 2 1.4-.4 1.1.6.4 1.4h2.4l.4-1.4 1.1-.6 1.4.4 1.2-2-.9-1.2V6.6l.9-1.2-1.2-2-1.4.4-1.1-.6-.4-1.4Z" transform="translate(0 .75)" />
-      <circle cx="8" cy="8" r="2" />
-    </svg>
-  </summary>
-  <div class="settings-panel">
-    {#if settings}
-      <label for="default-diff-layout">Default diff layout</label>
-      <select
-        id="default-diff-layout"
-        value={defaultLayout}
-        onchange={changeLayout}
-        disabled={savingLayout || !settings.global.version}>
-        <option value="unified">Unified</option>
-        <option value="split">Split</option>
-      </select>
-    {/if}
-    <p>Rules use repository-relative globs. The first match wins. Use <code>**</code> to match across folders.</p>
-    <p>In JSON, set <code>categoryRules</code> to an array of rules with <code>glob</code>, <code>category</code>, and an optional <code>subcategory</code>.</p>
-    {#if settings}
-      <CategoryRuleForm
-        scope="Global"
-        parent="built-in"
-        tier={settings.global}
-        {refresh}
-        save={(version, rules) => save(null, version, rules)} />
-      {#if mainCheckout && loadedCheckout === mainCheckout && settings.project}
-        {#key mainCheckout}
-          <CategoryRuleForm
-            scope="Project"
-            parent="global"
-            tier={settings.project}
-            {refresh}
-            save={(version, rules) => save(mainCheckout ?? null, version, rules)} />
-        {/key}
+<main class="settings-screen" aria-label="Settings">
+  <aside class="settings-sidebar" aria-label="Settings sidebar">
+    <header class="back-bar">
+      <button class="nav-button" type="button" bind:this={backButton} aria-label="Back to review" disabled={saving} onclick={onback}>
+        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M13.5 8h-11m4-4-4 4 4 4" /></svg>
+        Back to review
+      </button>
+    </header>
+    <nav aria-label="Settings sections">
+      {#if checkout === null}
+        <button type="button" class="nav-button" aria-current={showGeneral ? "page" : undefined}
+          disabled={saving} onclick={() => section = "general"}>
+          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4h11m-11 4h11m-11 4h11M6 2.6v2.8m4 1.2v2.8M6 10.6v2.8" /></svg>
+          General
+        </button>
       {/if}
-    {/if}
-    {#if error}
-      <p role="alert">{error}</p>
-    {/if}
-    {#if settings?.global.error}
-      <p role="alert">{settings.global.error}</p>
-    {/if}
-    {#if loadedCheckout === mainCheckout && settings?.project?.error}
-      <p role="alert">{settings.project.error}</p>
-    {/if}
+      <button type="button" class="nav-button" aria-current={!showGeneral ? "page" : undefined}
+        disabled={saving} onclick={() => section = "categories"}>
+        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M1.8 4.6a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5H13a1.2 1.2 0 0 1 1.2 1.2v5.6a1.2 1.2 0 0 1-1.2 1.2H3a1.2 1.2 0 0 1-1.2-1.2Z" /></svg>
+        File categories
+      </button>
+    </nav>
+    <footer>
+      <svg aria-hidden="true" viewBox="0 0 18 18"><rect x="1.5" y="1.5" width="15" height="15" rx="3" /><path d="M6 7h6M9 4v6m-3 3h6" /></svg>
+      Diffest
+    </footer>
+  </aside>
+
+  <div class="settings-workspace">
+    <header class="settings-bar">
+      <strong>Settings</strong>
+      <div class="scope-picker">
+        {#if checkout === null}
+          <svg aria-hidden="true" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" /><ellipse cx="8" cy="8" rx="2.5" ry="5.8" /><path d="M2.2 8h11.6" /></svg>
+        {:else}
+          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M1.8 4.6a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5H13a1.2 1.2 0 0 1 1.2 1.2v5.6a1.2 1.2 0 0 1-1.2 1.2H3a1.2 1.2 0 0 1-1.2-1.2Z" /></svg>
+        {/if}
+        <select aria-label="Settings scope" bind:this={scopePicker} value={scope} disabled={saving}
+          onchange={(event) => {
+            scope = event.currentTarget.value;
+            section = "categories";
+          }}>
+          <option value="">Global</option>
+          {#each configurableProjects as project (project.id)}
+            {@const hasDuplicateName = configurableProjects.some(other => other.id !== project.id && other.name === project.name)}
+            <option value={project.id.toString()}>
+              Project · {project.name}{hasDuplicateName ? ` (${ project.mainCheckout })` : ""}
+            </option>
+          {/each}
+        </select>
+      </div>
+    </header>
+    <div class="settings-scroll">
+      <section class="settings-content" aria-labelledby="settings-section-title">
+        {#if showGeneral}
+          <h1 id="settings-section-title">General</h1>
+          {#if currentSettings}
+            <div class="setting">
+              <div>
+                <h2>Default diff layout</h2>
+                <p>New reviews use this layout.</p>
+              </div>
+              <div class="layout-buttons" role="group" aria-label="Default diff layout">
+                <button type="button" aria-pressed={currentSettings.defaultDiffLayout !== "split"}
+                  disabled={saving || !tier?.version} onclick={() => changeLayout("unified")}>Unified</button>
+                <button type="button" aria-pressed={currentSettings.defaultDiffLayout === "split"}
+                  disabled={saving || !tier?.version} onclick={() => changeLayout("split")}>Split</button>
+              </div>
+            </div>
+          {/if}
+        {:else}
+          <h1 id="settings-section-title">File categories</h1>
+          <p class="intro">Group changed files in the Files sidebar. The first matching glob wins.</p>
+          {#if tier}
+            {#key checkout}
+              {@const draftKey = scope}
+              <CategoryRuleForm scope={checkout === null ? "Global" : "Project"}
+                parent={checkout === null ? "built-in" : "Global"} {tier} {refresh} save={saveRules}
+                initialDraft={drafts[draftKey] ?? null} ondraft={(draft) => drafts[draftKey] = draft}
+                onglobal={() => {
+                  scope = "";
+                  scopePicker.focus();
+                }} />
+            {/key}
+          {/if}
+        {/if}
+        {#if error}
+          <p class="error" role="alert">{error}</p>
+        {:else if !currentSettings}
+          <p class="intro" role="status">Loading settings…</p>
+        {/if}
+        {#if tier?.error}
+          <p class="error" role="alert">{tier.error}</p>
+        {/if}
+        {#if checkout !== null && currentSettings?.global.error}
+          <p class="error" role="alert">{currentSettings.global.error}</p>
+        {/if}
+      </section>
+    </div>
   </div>
-</details>
+</main>
 
 <style>
-summary {
-  cursor: pointer;
-  background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  position: relative;
+.settings-screen {
+  position: fixed;
+  z-index: 5;
+  inset: 0;
   display: grid;
-  place-items: center;
-  width: max-content;
-  padding: 0.23rem;
-  list-style: none;
-}
-summary::-webkit-details-marker { display: none; }
-summary svg { width: 1rem; height: 1rem; stroke: currentColor; stroke-width: 1.4; }
-summary:hover, details[open] > summary { background: var(--selection); }
-details[open] > summary { z-index: 3; }
-summary.has-error::after {
-  content: "";
-  position: absolute;
-  inset: 0.12rem 0.12rem auto auto;
-  width: 0.35rem;
-  height: 0.35rem;
-  border-radius: 50%;
-  background: var(--removed-ink);
-}
-.settings-panel {
-  position: absolute;
-  z-index: 2;
-  box-sizing: border-box;
-  inset: auto auto 100% 0.85rem;
-  width: min(calc(100vw - 1.7rem), 34rem);
-  max-height: min(80dvh, calc(100dvh - 9rem));
-  overflow: auto;
-  padding: 0.85rem 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px #0002;
-}
-@media (max-width: 520px) {
-  .settings-panel {
-    position: fixed;
-    inset: auto 0.85rem 0.85rem;
-    max-height: 45dvh;
-  }
-}
-label, select { margin-block-start: 0.65rem; }
-select {
-  font: inherit;
-  color: inherit;
+  grid-template-columns: max(10rem, 20vw) minmax(0, 1fr);
   background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  padding: 0.35rem 0.45rem;
 }
-p { font-size: 0.85rem; overflow-wrap: anywhere; }
+.settings-sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  border-inline-end: 1px solid var(--border);
+  background: var(--surface);
+}
+.back-bar, .settings-bar {
+  box-sizing: border-box;
+  min-height: 3.9rem;
+  display: flex;
+  align-items: center;
+  border-block-end: 1px solid var(--border);
+}
+.back-bar { padding: 0.45rem 0.65rem; }
+.settings-bar { justify-content: space-between; gap: 0.65rem; padding: 0.45rem 1.25rem; background: var(--toolbar); }
+.settings-bar strong, h2 { font-size: 0.95rem; }
+.settings-workspace { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+.settings-scroll { min-width: 0; overflow: auto; scrollbar-gutter: stable; }
+.settings-content { box-sizing: border-box; max-width: 54rem; padding: 1.7rem 1.5rem; margin-inline: auto; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 1.45rem; letter-spacing: -0.025em; }
+svg { flex: none; width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+nav { display: grid; align-content: start; gap: 0.2rem; padding: 0.75rem 0.65rem; overflow: auto; }
+button, select { font: inherit; color: inherit; }
+button:disabled, select:disabled { opacity: 0.58; }
+button:not(:disabled), select:not(:disabled) { cursor: pointer; }
+.nav-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.45rem 0.5rem;
+  text-align: start;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.nav-button[aria-current="page"] { color: var(--accent); background: var(--selection); font-weight: 620; }
+.nav-button:not(:disabled):hover { background: var(--selection); }
+footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.9rem; border-block-start: 1px solid var(--border); font-weight: 680; }
+footer svg { color: var(--accent); width: 1.125rem; height: 1.125rem; }
+.scope-picker { position: relative; max-width: min(16rem, 65%); }
+.scope-picker svg { position: absolute; inset-inline-start: 0.55rem; inset-block-start: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.scope-picker select { max-width: 100%; min-width: min(10rem, 100%); padding: 0.35rem 0.5rem 0.35rem 1.85rem; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); text-overflow: ellipsis; }
+.intro, .setting p { margin-block-start: 0.25rem; color: var(--muted); }
+.setting { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.65rem; margin-block-start: 1.3rem; padding: 0.75rem 0; border-block: 1px solid var(--border); }
+.layout-buttons { display: flex; border: 1px solid var(--border); border-radius: 5px; }
+.layout-buttons button { padding: 0.3rem 0.55rem; border: 0; background: transparent; }
+.layout-buttons button + button { border-inline-start: 1px solid var(--border); }
+.layout-buttons button[aria-pressed="true"], .layout-buttons button:not(:disabled):hover { background: var(--selection); color: var(--accent); }
+.error { margin-block-start: 0.5rem; color: var(--removed-ink); overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .settings-screen { grid-template-columns: max(7rem, 24vw) minmax(0, 1fr); }
+  .settings-bar, .settings-content { padding-inline: 0.7rem; }
+  .back-bar, nav { padding-inline: 0.25rem; }
+}
 </style>

@@ -14,7 +14,12 @@ import type {
 import { invoke } from "@tauri-apps/api/core";
 import { onMount, tick } from "svelte";
 import CategorizedFileTree from "../lib/categorized-file-tree.svelte";
-import { type FileCategory, groupFiles } from "../lib/category-settings.js";
+import {
+  type Categorization,
+  type CategoryRuleDraft,
+  type FileCategory,
+  groupFiles,
+} from "../lib/category-settings.js";
 import CategorySettings from "../lib/category-settings.svelte";
 import { fileName } from "../lib/file-details.js";
 import { summarizePatch } from "../lib/patch.js";
@@ -41,6 +46,12 @@ type OpenReview
     kind: "worktree";
     patches: WorktreePatch[];
   };
+
+interface ReviewPosition {
+  file: HTMLElement;
+  offset: number;
+  selectedIndex: number;
+}
 /* eslint-enable @stylistic/key-spacing */
 
 let projects = $state<Project[]>([]);
@@ -77,7 +88,13 @@ const filesAction = $derived(filesCollapsed ? "Open Files sidebar" : "Collapse F
 let projectsCollapsed = $state(false);
 const projectsAction = $derived(projectsCollapsed ? "Open Projects sidebar" : "Collapse Projects sidebar");
 let settingsOpen = $state(false);
+const drafts: Record<string, CategoryRuleDraft | null> = {};
 let settingsAnnouncement = $state("");
+let settingsButton: HTMLButtonElement | undefined = $state();
+let reviewPosition: ReviewPosition | null = null;
+let pendingSettingsRead = 0;
+let categorizedCheckout: string | null | undefined;
+let categorizedPaths: string[] = [];
 let projectSidebar: HTMLElement | undefined = $state();
 let fileStream: HTMLElement | undefined = $state();
 const activeProject = $derived(projects.find(project => project.id === activeProjectId));
@@ -90,7 +107,67 @@ const reviewedFileCount = $derived(reviewedWorktreeCount ?? review?.summary.revi
 
 function toggleProjects(): void {
   projectsCollapsed = !projectsCollapsed;
-  if (projectsCollapsed) settingsOpen = false;
+}
+
+async function loadReviewSettings(checkout: string | null, filePaths: string[]): Promise<void> {
+  const request = ++pendingSettingsRead;
+  try {
+    const settings = await invoke<Categorization>("read_category_settings", {
+      mainCheckout: checkout,
+      paths       : filePaths,
+    });
+    if (request !== pendingSettingsRead) return;
+
+    categories = settings.categories;
+    defaultLayout = settings.defaultDiffLayout ?? "unified";
+    settingsAnnouncement = [settings.global.error, settings.project?.error].filter(Boolean).join(" ");
+  } catch (error_) {
+    if (request === pendingSettingsRead) settingsAnnouncement = String(error_);
+  }
+}
+
+function refreshReviewSettings(): Promise<void> {
+  return loadReviewSettings(mainCheckout, paths);
+}
+
+$effect(() => {
+  const checkout = mainCheckout;
+  const filePaths = paths;
+  if (categorizedCheckout === checkout && categorizedPaths.length === filePaths.length
+    && categorizedPaths.every((path, index) => path === filePaths[index])) return;
+
+  categorizedCheckout = checkout;
+  categorizedPaths = filePaths;
+  categories = [];
+  void loadReviewSettings(checkout, filePaths);
+});
+
+function openSettings(): void {
+  settingsOpen = true;
+  if (!fileStream) return;
+
+  const top = fileStream.getBoundingClientRect().top;
+  const file = [...fileStream.querySelectorAll<HTMLElement>(".review-file")]
+    .find(section => section.getBoundingClientRect().bottom > top);
+  if (!file) return;
+
+  reviewPosition = {
+    file,
+    offset: file.getBoundingClientRect().top - top,
+    selectedIndex,
+  };
+}
+
+async function closeSettings(): Promise<void> {
+  settingsOpen = false;
+  await tick();
+  if (reviewPosition && fileStream?.contains(reviewPosition.file)) {
+    const offset = reviewPosition.file.getBoundingClientRect().top - fileStream.getBoundingClientRect().top;
+    if (offset !== reviewPosition.offset) fileStream.scrollTop += offset - reviewPosition.offset;
+    if (selectedIndex !== reviewPosition.selectedIndex) jumpedFileIndex = reviewPosition.selectedIndex;
+  }
+  reviewPosition = null;
+  settingsButton?.focus({ preventScroll: true });
 }
 
 function startFileStream(): void {
@@ -362,7 +439,9 @@ function stageWorktreePatch(patch: WorktreePatch): void {
 }
 </script>
 
-<main class:projects-collapsed={projectsCollapsed}>
+<svelte:window onfocus={refreshReviewSettings} />
+
+<main class:projects-collapsed={projectsCollapsed} inert={settingsOpen}>
   <header class="app-bar">
     <div class="app-bar-content">
       <button class="icon-button projects-toggle" type="button" aria-controls="projects"
@@ -438,7 +517,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
     {/if}
   </header>
 
-  <div class="projects-column" class:settings-open={settingsOpen}>
+  <div class="projects-column">
     <aside id="projects" aria-label="Projects" inert={projectsCollapsed} bind:this={projectSidebar}>
       <header class="panel-label">
         <span>Projects</span>
@@ -473,8 +552,14 @@ function stageWorktreePatch(patch: WorktreePatch): void {
       </div>
       <footer class="project-footer">
         <h1><svg aria-hidden="true" viewBox="0 0 18 18" fill="none"><rect x="1.5" y="1.5" width="15" height="15" rx="3" /><path d="M6 7h6M9 4v6m-3 3h6" /></svg>Diffest</h1>
-        <CategorySettings {mainCheckout} {paths} bind:categories bind:defaultLayout bind:open={settingsOpen}
-          bind:announcement={settingsAnnouncement} />
+        <button class="icon-button settings-button" class:has-error={Boolean(settingsAnnouncement)}
+          type="button" bind:this={settingsButton} title="Settings"
+          aria-label={settingsAnnouncement ? "Settings, error" : "Settings"} onclick={openSettings}>
+          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+            <path d="m6.8 1.8-.4 1.4-1.1.6-1.4-.4-1.2 2 .9 1.2v1.3l-.9 1.2 1.2 2 1.4-.4 1.1.6.4 1.4h2.4l.4-1.4 1.1-.6 1.4.4 1.2-2-.9-1.2V6.6l.9-1.2-1.2-2-1.4.4-1.1-.6-.4-1.4Z" transform="translate(0 .75)" />
+            <circle cx="8" cy="8" r="2" />
+          </svg>
+        </button>
       </footer>
     </aside>
   </div>
@@ -570,6 +655,9 @@ function stageWorktreePatch(patch: WorktreePatch): void {
     {/if}
   </section>
 </main>
+{#if settingsOpen}
+  <CategorySettings {projects} {activeProjectId} {drafts} onback={closeSettings} onsaved={refreshReviewSettings} />
+{/if}
 
 <style>
 :global(html) {
@@ -671,7 +759,6 @@ h1 svg { width: 1.25rem; height: 1.25rem; stroke: var(--accent); stroke-width: 1
 }
 .projects-column, .workspace, .changes, .file-stream { min-width: 0; min-height: 0; }
 .projects-column { grid-column: 1; grid-row: 1 / -1; overflow: clip; }
-main:not(.projects-collapsed) .projects-column.settings-open { overflow: visible; }
 .workspace {
   grid-column: 2;
   grid-row: 2;
@@ -827,6 +914,17 @@ progress::-moz-progress-bar { background: var(--accent); }
 .review-mark.checked { color: var(--accent); }
 .review-mark svg, .icon-button svg { display: block; width: 1rem; height: 1rem; stroke: currentColor; stroke-width: 1.4; }
 .icon-button { padding: 0.23rem; }
+.settings-button { position: relative; }
+.settings-button:not(:disabled):hover { background: var(--selection); }
+.settings-button.has-error::after {
+  content: "";
+  position: absolute;
+  inset: 0.12rem 0.12rem auto auto;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 50%;
+  background: var(--removed-ink);
+}
 .sr-only { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; white-space: nowrap; }
 
 .app-bar button { font-size: 0.85rem; }

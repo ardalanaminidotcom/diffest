@@ -11,6 +11,11 @@ interface CategoryRule extends FileCategory {
   glob: string;
 }
 
+interface CategoryRuleDraft {
+  rules: CategoryRule[];
+  version: string | null;
+}
+
 interface RuleSettings {
   path: string;
   version: string | null;
@@ -43,4 +48,4 @@ function groupFiles(paths: string[], categories: FileCategory[]): FileGroups {
 }
 
 export { groupFiles };
-export type { Categorization, CategoryRule, FileCategory, FileGroups, RuleSettings };
+export type { Categorization, CategoryRule, CategoryRuleDraft, FileCategory, FileGroups, RuleSettings };

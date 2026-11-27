@@ -1,33 +1,56 @@
 <script lang="ts">
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
-import type { CategoryRule, RuleSettings } from "./category-settings.js";
+import type { CategoryRule, CategoryRuleDraft, RuleSettings } from "./category-settings.js";
+import { tick, untrack } from "svelte";
 
 interface Properties {
   scope: string;
   parent: string;
   tier: RuleSettings;
+  initialDraft: CategoryRuleDraft | null;
+  ondraft(draft: CategoryRuleDraft | null): void;
   refresh(): void;
   save(version: string, rules: CategoryRule[] | null): Promise<void>;
+  onglobal(): void;
 }
 
-let { scope, parent, tier, refresh, save }: Properties = $props();
-let draft = $state<CategoryRule[] | null>(null);
-let draftVersion = $state<string | null>(null);
+let { scope, parent, tier, initialDraft, ondraft, refresh, save, onglobal }: Properties = $props();
+let draft = $state(untrack(() => initialDraft));
 let saving = $state(false);
 let error = $state("");
-let changed = $derived(draft !== null && draftVersion !== tier.version);
+let showAllRules = $state(false);
+let form: HTMLFormElement | null;
+const previewCount = 4;
+const visibleRules = $derived(showAllRules ? tier.rules : tier.rules.slice(0, previewCount));
+const changed = $derived(draft !== null && draft.version !== tier.version);
 
-function edit(): void {
-  draft = tier.rules.map(rule => ({
-    ...rule,
-    subcategory: rule.subcategory ?? "",
-  }));
-  draftVersion = tier.version;
+async function edit(): Promise<void> {
+  draft = {
+    rules: tier.rules.map(rule => ({
+      ...rule,
+      subcategory: rule.subcategory ?? "",
+    })),
+    version: tier.version,
+  };
+  ondraft(draft);
   error = "";
+  await tick();
+  form?.querySelector<HTMLInputElement>("input[name=glob]")?.focus();
+}
+
+async function addRule(): Promise<void> {
+  draft?.rules.push({
+    glob       : "",
+    category   : "",
+    subcategory: "",
+  });
+  await tick();
+  form?.querySelector<HTMLInputElement>("li:last-child input[name=glob]")?.focus();
 }
 
 function discard(): void {
   draft = null;
+  ondraft(null);
   error = "";
   refresh();
 }
@@ -35,8 +58,8 @@ function discard(): void {
 function move(index: number, destination: number): void {
   if (!draft) return;
 
-  const [rule] = draft.splice(index, 1);
-  draft.splice(destination, 0, rule);
+  const [rule] = draft.rules.splice(index, 1);
+  draft.rules.splice(destination, 0, rule);
 }
 
 async function persist(version: string, rules: CategoryRule[] | null): Promise<void> {
@@ -45,6 +68,7 @@ async function persist(version: string, rules: CategoryRule[] | null): Promise<v
   try {
     await save(version, rules);
     draft = null;
+    ondraft(null);
   } catch (error_) {
     error = String(error_);
   } finally {
@@ -54,21 +78,29 @@ async function persist(version: string, rules: CategoryRule[] | null): Promise<v
 
 function submit(event: SubmitEvent): void {
   event.preventDefault();
-  if (draft && draftVersion && !changed && !saving) {
-    const rules = draft.map(rule => ({
+  if (draft?.version && !changed && !saving) {
+    const rules = draft.rules.map(rule => ({
       glob       : rule.glob,
       category   : rule.category,
       subcategory: rule.subcategory?.trim() || null,
     }));
-    void persist(draftVersion, rules);
+    void persist(draft.version, rules);
   }
 }
 </script>
 
-<form aria-label={scope + " category rules"} onsubmit={submit}>
-  <h3>{scope} category rules</h3>
-  <code>{tier.path}</code>
-  <p>{tier.custom ? "Custom rules" : `Inherits ${parent} rules`}</p>
+<form aria-label={scope + " category rules"} bind:this={form} onsubmit={submit}>
+  <div class="rule-heading">
+    <div class="rule-title">
+      <h2>Category rules</h2>
+      <span class="rule-status">{tier.custom ? "Custom rules" : scope === "Project" ? "Inherited from Global" : "Built-in rules"}</span>
+    </div>
+    {#if !draft}
+      <button class="primary" type="button" disabled={saving || !tier.version} onclick={edit}>
+        {tier.custom ? "Edit rules" : "Customize rules"}
+      </button>
+    {/if}
+  </div>
   {#if changed}
     <p role="alert">Settings changed on disk. Discard edits to load the file.</p>
   {:else if error}
@@ -78,7 +110,7 @@ function submit(event: SubmitEvent): void {
     <fieldset disabled={saving}>
       <legend>Rules in match order</legend>
       <ol>
-        {#each draft as rule, index (index)}
+        {#each draft.rules as rule, index (index)}
           <li>
             <label>Glob <input name="glob" bind:value={rule.glob} required /></label>
             <label>Category <input bind:value={rule.category} required /></label>
@@ -92,48 +124,94 @@ function submit(event: SubmitEvent): void {
               <button
                 type="button"
                 aria-label={`Move rule ${index + 1} down`}
-                disabled={index === draft!.length - 1}
+                disabled={index === draft!.rules.length - 1}
                 onclick={() => move(index, index + 1)}>↓</button>
-              <button type="button" onclick={() => draft?.splice(index, 1)}>Remove rule</button>
+              <button type="button" onclick={() => draft?.rules.splice(index, 1)}>Remove rule</button>
             </div>
           </li>
         {/each}
       </ol>
-      <button type="button" onclick={() => draft?.push({ glob: "", category: "", subcategory: "" })}>Add rule</button>
-      <button type="submit" disabled={changed}>Save rules</button>
+      <button type="button" onclick={addRule}>Add rule</button>
+      <button class="primary" type="submit" disabled={changed}>Save rules</button>
       <button type="button" onclick={discard}>Discard edits</button>
     </fieldset>
   {:else}
-    <button type="button" disabled={saving || !tier.version} onclick={edit}>
-      {tier.custom ? "Edit rules" : "Customize rules"}
-    </button>
+    {#if tier.rules.length}
+      <div class="rules-table">
+        <table aria-label="Rules in match order">
+          <thead><tr><th scope="col">Glob</th><th scope="col">Category</th><th scope="col">Subcategory</th></tr></thead>
+          <tbody>
+            {#each visibleRules as rule}
+              <tr><td><code>{rule.glob}</code></td><td>{rule.category}</td><td>{rule.subcategory ?? "—"}</td></tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if tier.rules.length > previewCount}
+        <button type="button" class="text-action" aria-expanded={showAllRules} onclick={() => showAllRules = !showAllRules}>
+          {showAllRules ? "Show fewer rules" : `Show all ${tier.rules.length} rules`}
+        </button>
+      {/if}
+    {:else}
+      <p class="hint">No category rules.</p>
+    {/if}
     {#if tier.custom}
-      <button
+      <button class="text-action"
         type="button"
         disabled={saving || !tier.version}
         onclick={() => tier.version && persist(tier.version, null)}>Reset to {parent} rules</button>
+    {:else if scope === "Project"}
+      <p class="hint">
+        Uses Global rules across this project's worktrees.
+        <button type="button" class="text-action" onclick={onglobal}>View Global rules</button>
+      </p>
     {/if}
   {/if}
+  <p class="file-path">
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M4 2h5l3 3v9H4zM9 2v3h3M6 8h4m-4 3h4" /></svg>
+    <code>{tier.path}</code>
+  </p>
 </form>
 
 <style>
-form, fieldset { margin-block: 0.75rem; }
-h3, p { margin-block: 0.4rem; }
-h3 { font-size: 1rem; }
+form { margin-block-start: 1.35rem; }
+fieldset { margin: 0; padding: 0.6rem 0.8rem; }
+.rule-heading, .rule-title { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.rule-heading { justify-content: space-between; margin-block-end: 0.6rem; }
+h2 { margin: 0; font-size: 0.95rem; }
+p { margin-block: 0.5rem; }
+.hint { color: var(--muted); }
+.rule-status { padding: 0.08rem 0.38rem; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-size: 0.8rem; }
+.rules-table { border: 1px solid var(--border); border-radius: 6px; overflow: clip; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+th, td { padding: 0.45rem 0.65rem; text-align: start; overflow-wrap: anywhere; }
+th { background: var(--surface); color: var(--muted); font-weight: 590; }
+th:first-child { width: 46%; }
+tbody td { border-block-start: 1px solid var(--border); }
+td code { color: var(--accent); }
 code { overflow-wrap: anywhere; }
+.file-path { display: flex; align-items: flex-start; gap: 0.4rem; margin-block-start: 1.25rem; color: var(--muted); font-size: 0.82rem; }
+.file-path svg { flex: none; width: 0.95rem; height: 0.95rem; stroke: currentColor; stroke-width: 1.4; }
+.rules-table + .text-action { margin-block-start: 0.45rem; }
 fieldset { border: 1px solid var(--border); min-inline-size: 0; }
 ol { padding-inline-start: 1.5rem; }
 li { margin-block-end: 0.5rem; }
+li > label { width: 32%; box-sizing: border-box; padding-inline-end: 0.35rem; overflow-wrap: anywhere; }
+.order { margin-block-start: 0.35rem; }
 label, .order { display: inline-block; font-size: 0.8rem; }
-input { display: block; max-width: 100%; }
+input { display: block; width: 100%; }
 button, input {
   box-sizing: border-box;
   font: inherit;
   color: inherit;
-  background: Canvas;
+  background: var(--canvas);
   border: 1px solid var(--border);
   border-radius: 0.35rem;
   padding: 0.35rem 0.45rem;
 }
+button.primary, button:not(:disabled):hover { background: var(--selection); }
+button.primary, button.text-action { color: var(--accent); }
+button.text-action { border: 0; background: transparent; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
+.text-action + .text-action { margin-inline-start: 0.65rem; }
 button:not(:disabled) { cursor: pointer; }
 </style>
