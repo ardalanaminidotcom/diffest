@@ -130,7 +130,7 @@ function omitHunkHeaders(patch: string): string {
     .join("\n");
 }
 
-function splitHunk(lines: PatchLine[]): SplitRow[] {
+function splitHunk(lines: readonly PatchLine[]): SplitRow[] {
   const rows: SplitRow[] = [];
   let removals: PatchLine[] = [];
   let additions: PatchLine[] = [];
@@ -162,4 +162,5 @@ function splitHunk(lines: PatchLine[]): SplitRow[] {
   return rows;
 }
 
+export type { PatchLine };
 export { omitHunkHeaders, parsePatch, splitHunk, summarizePatch };

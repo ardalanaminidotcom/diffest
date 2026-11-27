@@ -59,7 +59,6 @@ let defaultLayout = $state<DiffLayout>("unified");
 let layoutOverride = $state<DiffLayout | null>(null);
 let layout = $derived(layoutOverride ?? defaultLayout);
 let jumpedFileIndex = $state<number | null>(null);
-let pendingJump = $state<number | null>(null);
 let reviewSession = $state(0);
 let files = $derived(worktreeReview ?? comparison?.files ?? []);
 let mainCheckout = $derived(projects.find(project => project.id === activeProjectId)?.mainCheckout ?? null);
@@ -84,6 +83,8 @@ let fileStream: HTMLElement | undefined = $state();
 const activeProject = $derived(projects.find(project => project.id === activeProjectId));
 const activeBranch = $derived(activeProject?.worktrees.find(worktree => worktree.path === activeCheckout)?.branch);
 const patchSummaries = $derived(files.map(file => summarizePatch(file.patch)));
+const mountedRowLimit = 20_000;
+const windowRows = $derived(patchSummaries.reduce((rows, patch) => rows + patch.lineCount, 0) > mountedRowLimit);
 const reviewedWorktreeCount = $derived(worktreeReview?.filter(patch => patch.reviewed).length);
 const reviewedFileCount = $derived(reviewedWorktreeCount ?? review?.summary.reviewedCount ?? 0);
 
@@ -94,23 +95,14 @@ function toggleProjects(): void {
 
 function startFileStream(): void {
   jumpedFileIndex = null;
-  pendingJump = null;
   reviewSession++;
 }
 
 function jumpToFile(index: number): void {
   jumpedFileIndex = index;
-  pendingJump = index;
   const file = fileStream?.querySelector<HTMLElement>(`#file-review-${ index }`);
   file?.querySelector<HTMLButtonElement>("h2 button")?.focus({ preventScroll: true });
   file?.scrollIntoView({ block: "start" });
-}
-
-function finishFileJump(index: number, file: HTMLElement): void {
-  if (pendingJump !== index) return;
-
-  pendingJump = null;
-  if (file.querySelector("h2 button") === file.ownerDocument.activeElement) file.scrollIntoView({ block: "start" });
 }
 
 async function run(action: () => Promise<void>): Promise<void> {
@@ -508,9 +500,8 @@ function stageWorktreePatch(patch: WorktreePatch): void {
             {#each orderedIndices as index (worktreeReview?.[index]?.fingerprint ?? index)}
               {@const patch = worktreeReview?.[index]}
               <ReviewFile {index} file={files[index]} {patch} checkout={activeCheckout} {comparison} {layout} {busy}
-                lineCount={patchSummaries[index].lineCount}
+                {windowRows}
                 reviewed={patch?.reviewed ?? reviewedFiles.has(index)}
-                jumping={pendingJump === index} onjump={finishFileJump}
                 onreview={() => toggleFileReviewed(index)} onstage={stageWorktreePatch} />
             {/each}
           </section>
@@ -839,7 +830,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .sr-only { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; white-space: nowrap; }
 
 .app-bar button { font-size: 0.85rem; }
-.file-stream { display: grid; align-content: start; gap: 0.65rem; padding: 0.65rem; overflow: auto; }
+.file-stream { display: grid; align-content: start; gap: 0.65rem; padding: 0.65rem; overflow: auto; scrollbar-gutter: stable; }
 .comparison-note { margin: 0; color: var(--muted); font-size: 0.8rem; }
 .comparison-note code { margin-inline-start: 0.45rem; }
 .file-stream:focus-visible { outline-offset: -2px; }

@@ -2,7 +2,7 @@
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { ChangedFile, Comparison, DiffLayout, WorktreePatch } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
-import { flushSync, tick, untrack } from "svelte";
+import { untrack } from "svelte";
 import DiffView from "./diff-view.svelte";
 import {
   type FileDetails,
@@ -21,28 +21,23 @@ interface Properties {
   checkout: string;
   comparison: Comparison | null;
   layout: DiffLayout;
-  lineCount: number;
+  windowRows: boolean;
   reviewed: boolean | null;
   busy: boolean;
-  jumping: boolean;
-  onjump(index: number, file: HTMLElement): void;
   onreview(): void;
   onstage(patch: WorktreePatch): void;
 }
 
 let {
-  index, file, patch, checkout, comparison, layout, lineCount, reviewed, busy, jumping, onjump, onreview, onstage,
+  index, file, patch, checkout, comparison, layout, windowRows, reviewed, busy, onreview, onstage,
 }: Properties = $props();
 const isReviewed = $derived(reviewed === true);
 let expanded = $derived(!isReviewed);
 const name = $derived(fileName(file.path));
 let section: HTMLElement | undefined = $state();
-let content: HTMLDivElement | undefined = $state();
+let preview: HTMLDivElement | undefined = $state();
 let nearViewport = $state(false);
-let measuredBody = $state<{
-  height: number;
-  layout: DiffLayout;
-}>();
+let previewHeight = $state(0);
 let details = $state.raw<FileDetails | null>(null);
 let detailsError = $state("");
 let previewsDiscarded = $state(false);
@@ -61,41 +56,14 @@ $effect(() => {
   const stream = fileSection?.parentElement;
   if (!fileSection || !stream) return;
 
-  // Keep file headers mounted and reserve the body height when its patch leaves the viewport.
   const observer = new globalThis.IntersectionObserver((entries) => {
-    const near = entries.at(-1)?.isIntersecting === true;
-    if (near === nearViewport) return;
-
-    const previousBottom = fileSection.getBoundingClientRect().bottom;
-    const aboveViewport = expanded && stream.scrollTop > 0 && previousBottom <= stream.getBoundingClientRect().top;
-    if (!near && expanded && content) {
-      measuredBody = {
-        height: content.clientHeight,
-        layout,
-      };
-    }
-    nearViewport = near;
-    if (aboveViewport) {
-      // Preserve the visible position after the swap, accounting for any native scroll anchoring.
-      flushSync();
-      const offset = fileSection.getBoundingClientRect().bottom - previousBottom;
-      if (Math.abs(offset) >= 1) stream.scrollTop += offset;
-    }
+    nearViewport = entries.at(-1)?.isIntersecting === true;
   }, {
     root      : stream,
     rootMargin: "240px",
   });
   observer.observe(fileSection);
   return () => observer.disconnect();
-});
-
-$effect(() => {
-  if (!jumping || !nearViewport || !section) return;
-
-  // Align again after the real patch replaces its estimated height.
-  const fileSection = section;
-  const fileIndex = index;
-  void tick().then(() => onjump(fileIndex, fileSection));
 });
 
 function withoutPreview(version: FileVersion | null): FileVersion | null {
@@ -110,6 +78,7 @@ function withoutPreview(version: FileVersion | null): FileVersion | null {
 function discardPreviews(): void {
   if (!details || !(details.before?.preview || details.after?.preview)) return;
 
+  if (preview?.clientHeight) previewHeight = preview.getBoundingClientRect().height;
   details = {
     before: withoutPreview(details.before),
     after : withoutPreview(details.after),
@@ -216,23 +185,22 @@ $effect(() => {
       </button>
     {/if}
   </header>
-  <div class="file-content" id={`file-content-${ index }`} hidden={!expanded} bind:this={content}>
+  <div class="file-content" id={`file-content-${ index }`} hidden={!expanded}>
     {#if expanded}
-      {#if nearViewport}
-        {#if file.patch}<DiffView patch={file.patch} path={file.path} previousPath={file.previousPath} {layout} />{/if}
-        {#if details && showImagePreviews && !previewsDiscarded}
-          <FilePreviews {details} />
-        {:else if !file.patch && !detailsError}
-          <p class="patch-note" role="status">
-            {details && !previewsDiscarded ? "No text diff available." : "Loading file…"}
-          </p>
-        {/if}
-        {#if detailsError}<p class="patch-note" role="status">{detailsError}</p>{/if}
-      {:else}
-        <div class="patch-placeholder" style:--patch-lines={lineCount}
-          style:block-size={measuredBody?.layout === layout ? `${ measuredBody.height }px` : null}
-          aria-hidden="true"></div>
+      {#if file.patch}
+        <DiffView patch={file.patch} path={file.path} previousPath={file.previousPath} {layout}
+          highlight={nearViewport} {windowRows} />
       {/if}
+      {#if details && showImagePreviews}
+        {#if previewsDiscarded}
+          <div aria-hidden="true" style:block-size={`${ previewHeight }px`}></div>
+        {:else}
+          <div bind:this={preview}><FilePreviews {details} /></div>
+        {/if}
+      {:else if !file.patch && !detailsError}
+        <p class="patch-note" role="status">{details ? "No text diff available." : "Loading file…"}</p>
+      {/if}
+      {#if detailsError}<p class="patch-note" role="status">{detailsError}</p>{/if}
     {/if}
   </div>
 </section>
@@ -277,6 +245,5 @@ input[aria-disabled="true"] { cursor: default; opacity: 0.58; }
 .stage-file:disabled { cursor: default; opacity: 0.58; }
 .stage-file.primary { color: var(--accent); border-color: var(--accent); background: var(--selection); }
 .file-content { border-block-start: 1px solid var(--border); }
-.patch-placeholder { block-size: calc(var(--patch-lines) * 1.35625rem); }
 .patch-note { padding: 0.55rem 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
 </style>

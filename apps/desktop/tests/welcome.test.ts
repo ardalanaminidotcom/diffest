@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import DiffView from "../src/lib/diff-view.svelte";
 import { ssr } from "../src/routes/+layout.js";
 import Page from "../src/routes/+page.svelte";
 
@@ -243,7 +244,7 @@ it("reviews a continuous file stream in sidebar order and jumps to a collapsed f
   expect(target.querySelectorAll("[aria-label='Unified patch']")).toHaveLength(3);
 });
 
-it("preserves the scroll position relative to visible content when a diff above it changes height", async () => {
+it("keeps text rows and scroll position stable when a patch leaves and reenters the viewport", async () => {
   const patches = ["first.txt", "second.txt"].map(path => ({
     path,
     status      : "A",
@@ -266,26 +267,62 @@ it("preserves the scroll position relative to visible content when a diff above 
   const updateVisibility = fileVisibility.get(firstFile);
   if (!updateVisibility) throw new Error("Expected the file to be observed");
 
+  const row = element(firstFile, "tr");
+  const initialScroll = 900;
+  stream.scrollTop = initialScroll;
   updateVisibility(false);
   flushSync();
-  expect(firstFile.querySelector(".patch-placeholder")).toBeTruthy();
+  expect(firstFile.querySelector("tr")).toBe(row);
+  expect(firstFile.querySelector(".patch-placeholder")).toBeNull();
 
-  const initialScroll = 900;
-  const fileTop = 200;
-  const placeholderHeight = 600;
-  const renderedHeight = 200;
-  const fileWidth = 600;
-  stream.scrollTop = initialScroll;
-  const box = vi.spyOn(firstFile, "getBoundingClientRect").mockImplementation(() => {
-    const height = firstFile.querySelector("table") ? renderedHeight : placeholderHeight;
-    return new globalThis.DOMRect(0, fileTop - stream.scrollTop, fileWidth, height);
-  });
   updateVisibility(true);
   flushSync();
+  expect(firstFile.querySelector("tr")).toBe(row);
+  expect(stream.scrollTop).toBe(initialScroll);
+});
 
-  expect(firstFile.querySelector("table")).toBeTruthy();
-  expect(stream.scrollTop).toBe(initialScroll - placeholderHeight + renderedHeight);
-  box.mockRestore();
+it("preserves measured space for offscreen row blocks in a large diff", async () => {
+  const target = document.createElement("div");
+  target.classList.add("file-stream");
+  document.body.append(target);
+  const lineCount = 260;
+  const rowHeight = 18;
+  const width = 500;
+  const tableBounds = vi.spyOn(globalThis.HTMLTableElement.prototype, "getBoundingClientRect")
+    .mockImplementation(function tableBounds(this: HTMLTableElement) {
+      return new globalThis.DOMRect(0, 0, width, this.rows.length * rowHeight);
+    });
+  const view = mount(DiffView, {
+    target,
+    props: {
+      patch       : `@@ -1,0 +1,${ lineCount } @@\n${ "+new line\n".repeat(lineCount) }`,
+      path        : "large.txt",
+      previousPath: null,
+      layout      : "unified",
+      highlight   : false,
+      windowRows  : true,
+    },
+  });
+  onTestFinished(async () => {
+    await unmount(view);
+    target.remove();
+    tableBounds.mockRestore();
+  });
+  await vi.waitFor(() => expect(target.querySelectorAll("table").length).toBeGreaterThan(1));
+  const table = element(target, "table");
+  const slot = table.parentElement;
+  const updateVisibility = slot && fileVisibility.get(slot);
+  if (!slot || !updateVisibility) throw new Error("Expected the row block to be observed");
+
+  const measuredSize = slot.style.blockSize;
+  expect(Number.parseFloat(measuredSize)).toBeGreaterThan(0);
+  updateVisibility(false);
+  expect(slot.querySelector("table")).toBeNull();
+  expect(slot.style.blockSize).toBe(measuredSize);
+
+  updateVisibility(true);
+  expect(slot.querySelector("table")?.textContent).toContain("new line");
+  expect(slot.style.blockSize).toBe(measuredSize);
 });
 
 it("opens the added checkout, switches worktrees, and shows unified patches with size changes", async () => {
@@ -1098,7 +1135,7 @@ it("keeps a mode-only image patch visible alongside its previews", async () => {
 
   updateVisibility(false);
   flushSync();
-  expect(imageFile.querySelector(".patch-placeholder")).toBeTruthy();
+  expect(imageFile.querySelector("pre")?.textContent).toContain("old mode 100644");
   expect(imageFile.querySelector("[aria-label='Image comparison']")).toBeNull();
   expect(imageFile.querySelector(".size-change")?.textContent.trim()).toBe("0 B");
 
