@@ -18,9 +18,9 @@ const rules = [
     category   : "Tests",
     subcategory: "Unit",
   },
-];
+] as const;
 
-function render(activeProjectId?: number): HTMLDivElement {
+function render(): HTMLDivElement {
   const target = document.createElement("div");
   document.body.append(target);
   const settings = mount(CategorySettings, {
@@ -36,7 +36,6 @@ function render(activeProjectId?: number): HTMLDivElement {
           savedReviews : [],
         },
       ],
-      activeProjectId,
       drafts : {},
       onback : vi.fn(),
       onsaved: vi.fn().mockResolvedValue(null),
@@ -79,6 +78,7 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
   vi.mocked(invoke)
     .mockReset()
     .mockResolvedValueOnce(read)
+    .mockResolvedValueOnce(read)
     .mockRejectedValueOnce(`${ projectPath }: Settings changed on disk. Reload before saving.`)
     .mockResolvedValue({
       ...read,
@@ -89,7 +89,11 @@ it("copies inherited rules, reorders them, and keeps the draft when a save confl
       },
     });
 
-  const target = render(1);
+  const target = render();
+  const picker = target.querySelector<HTMLSelectElement>("select");
+  if (!picker) throw new Error("Missing scope picker");
+  picker.value = "1";
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
   const form = await vi.waitFor(() => {
     const projectForm = target.querySelector<HTMLFormElement>("form[aria-label='Project category rules']");
     expect(projectForm).toBeTruthy();
@@ -179,12 +183,12 @@ it("saves new global category and subcategory labels and resets to the built-in 
   expect(target.querySelectorAll("ol li")).toHaveLength(1);
   button(target, "Add rule").click();
   flushSync();
-  const values = Object.values(customRule);
+  const values = [customRule.category, customRule.glob, customRule.subcategory];
   const inputs = [...target.querySelectorAll<HTMLInputElement>("ol li:last-child input")];
   expect(inputs).toHaveLength(values.length);
   for (const [index, field] of inputs.entries()) {
     field.value = values[index] ?? "";
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event(index === 0 ? "change" : "input", { bubbles: true }));
   }
   flushSync();
   button(target, "Save rules").click();
@@ -215,4 +219,82 @@ it("saves new global category and subcategory labels and resets to the built-in 
   await vi.waitFor(() => {
     expect(target.querySelector("[role='alert']")).toBeNull();
   });
+});
+
+it("groups adjacent category rules without moving rules across an intervening category", async () => {
+  const ordered = [
+    rules[0],
+    {
+      ...rules[0],
+      glob: "**/*.toml",
+    },
+    rules[1],
+    {
+      ...rules[0],
+      glob: "**/*.lock",
+    },
+  ];
+  const snapshot = {
+    global: {
+      path   : globalPath,
+      version: "global",
+      error  : null,
+      custom : true,
+      rules  : ordered,
+    },
+    project   : null,
+    categories: [],
+  };
+  vi.mocked(invoke).mockReset()
+    .mockResolvedValueOnce(snapshot)
+    .mockResolvedValueOnce(null)
+    .mockResolvedValue(snapshot);
+
+  const target = render();
+  button(target, "File categories").click();
+  const form = await vi.waitFor(() => {
+    const categoryForm = target.querySelector("form");
+    if (!categoryForm) throw new Error("Missing category rules");
+    return categoryForm;
+  });
+  expect([...form.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual(["Rust", "Tests", "Rust"]);
+  const displayedPatterns = [...form.querySelectorAll("ul code")].map(pattern => pattern.textContent);
+  expect(displayedPatterns).toEqual(ordered.map(rule => rule.glob));
+
+  button(form, "Edit rules").click();
+  flushSync();
+  const name = form.querySelector<HTMLInputElement>("input[required]");
+  if (!name) throw new Error("Missing category name");
+  name.value = "Tests";
+  name.dispatchEvent(new Event("input", { bubbles: true }));
+  flushSync();
+  expect(form.querySelectorAll(".category-name input")).toHaveLength(3);
+  name.value = "Source";
+  name.dispatchEvent(new Event("change", { bubbles: true }));
+  flushSync();
+  const secondRule = form.querySelector("ol > li:nth-child(2)");
+  if (!(secondRule instanceof HTMLElement)) throw new TypeError("Missing second rule");
+  button(secondRule, "Change category").click();
+  flushSync();
+  const separateName = secondRule.querySelector<HTMLInputElement>(".category-name input");
+  if (!separateName) throw new Error("Missing separate category name");
+  separateName.value = "Config";
+  separateName.dispatchEvent(new Event("change", { bubbles: true }));
+  button(form, "Save rules").click();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_category_settings", {
+    mainCheckout: null,
+    version     : "global",
+    rules       : [
+      {
+        ...ordered[0],
+        category: "Source",
+      },
+      {
+        ...ordered[1],
+        category: "Config",
+      },
+      ordered[2],
+      ordered[3],
+    ],
+  }));
 });

@@ -1182,13 +1182,12 @@ it("scopes the dedicated settings screen and returns to the same review position
   const gear = element(target, "#projects footer button[title=Settings]");
   gear.click();
   const screen = await vi.waitFor(() => element(target, "main[aria-label=Settings]"));
-  expect(screen.textContent).toContain("File categories");
-  expect(screen.textContent).not.toContain("General");
+  expect(screen.querySelector("h1")?.textContent).toBe("General");
   expect(element(target, "main:has(#projects)").inert).toBe(true);
 
   const scope = screen.querySelector<HTMLSelectElement>("select[aria-label='Settings scope']");
   if (!scope) throw new Error("Missing settings scope");
-  expect(scope.selectedOptions[0]?.textContent).toContain("demo");
+  expect(scope.selectedOptions[0]?.textContent).toBe("Global");
   const selectScope = (label: string): void => {
     const option = [...scope.options].find(item => item.textContent.includes(label));
     if (!option) throw new Error(`Missing scope ${ label }`);

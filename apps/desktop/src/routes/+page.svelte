@@ -656,7 +656,7 @@ function stageWorktreePatch(patch: WorktreePatch): void {
   </section>
 </main>
 {#if settingsOpen}
-  <CategorySettings {projects} {activeProjectId} {drafts} onback={closeSettings} onsaved={refreshReviewSettings} />
+  <CategorySettings {projects} {drafts} onback={closeSettings} onsaved={refreshReviewSettings} />
 {/if}
 
 <style>

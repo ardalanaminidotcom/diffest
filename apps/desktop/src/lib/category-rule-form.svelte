@@ -18,10 +18,16 @@ let { scope, parent, tier, initialDraft, ondraft, refresh, save, onglobal }: Pro
 let draft = $state(untrack(() => initialDraft));
 let saving = $state(false);
 let error = $state("");
-let showAllRules = $state(false);
 let form: HTMLFormElement | null;
-const previewCount = 4;
-const visibleRules = $derived(showAllRules ? tier.rules : tier.rules.slice(0, previewCount));
+const groups = $derived.by(() => {
+  const grouped: CategoryRule[][] = [];
+  for (const rule of tier.rules) {
+    const previous = grouped.at(-1);
+    if (previous?.[0].category === rule.category) previous.push(rule);
+    else grouped.push([rule]);
+  }
+  return grouped;
+});
 const changed = $derived(draft !== null && draft.version !== tier.version);
 
 async function edit(): Promise<void> {
@@ -60,6 +66,29 @@ function move(index: number, destination: number): void {
 
   const [rule] = draft.rules.splice(index, 1);
   draft.rules.splice(destination, 0, rule);
+}
+
+function renameCategory(index: number, name: string): void {
+  if (!draft) return;
+
+  const first = draft.rules[index];
+  const category = first.category;
+  first.category = name;
+  if (!category) return;
+
+  for (const rule of draft.rules.slice(index + 1)) {
+    if (rule.category !== category) break;
+
+    rule.category = name;
+  }
+}
+
+async function changeRuleCategory(index: number): Promise<void> {
+  if (!draft) return;
+
+  draft.rules[index].category = "";
+  await tick();
+  form?.querySelectorAll("ol > li")[index]?.querySelector<HTMLInputElement>(".category-name input")?.focus();
 }
 
 async function persist(version: string, rules: CategoryRule[] | null): Promise<void> {
@@ -111,11 +140,23 @@ function submit(event: SubmitEvent): void {
       <legend>Rules in match order</legend>
       <ol>
         {#each draft.rules as rule, index (index)}
-          <li>
+          {@const startsCategory = !rule.category || draft.rules[index - 1]?.category !== rule.category}
+          <li class:category-start={startsCategory}>
+            {#if startsCategory}
+              <label class="category-name">Category
+                <input value={rule.category} required
+                  onchange={(event) => renameCategory(index, event.currentTarget.value)}
+                  onkeydown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }} />
+              </label>
+            {/if}
             <label>Glob <input name="glob" bind:value={rule.glob} required /></label>
-            <label>Category <input bind:value={rule.category} required /></label>
             <label>Subcategory <input bind:value={rule.subcategory} /></label>
             <div class="order">
+              {#if rule.category && (draft.rules[index - 1]?.category === rule.category || draft.rules[index + 1]?.category === rule.category)}
+                <button type="button" onclick={() => changeRuleCategory(index)}>Change category</button>
+              {/if}
               <button
                 type="button"
                 aria-label={`Move rule ${index + 1} up`}
@@ -137,21 +178,18 @@ function submit(event: SubmitEvent): void {
     </fieldset>
   {:else}
     {#if tier.rules.length}
-      <div class="rules-table">
-        <table aria-label="Rules in match order">
-          <thead><tr><th scope="col">Glob</th><th scope="col">Category</th><th scope="col">Subcategory</th></tr></thead>
-          <tbody>
-            {#each visibleRules as rule}
-              <tr><td><code>{rule.glob}</code></td><td>{rule.category}</td><td>{rule.subcategory ?? "—"}</td></tr>
-            {/each}
-          </tbody>
-        </table>
+      <div class="category-groups" aria-label="Rules in match order" role="group">
+        {#each groups as group}
+          <section class="rule-group">
+            <h3>{group[0].category}</h3>
+            <ul>
+              {#each group as rule}
+                <li><code>{rule.glob}</code>{#if rule.subcategory}<span>{rule.subcategory}</span>{/if}</li>
+              {/each}
+            </ul>
+          </section>
+        {/each}
       </div>
-      {#if tier.rules.length > previewCount}
-        <button type="button" class="text-action" aria-expanded={showAllRules} onclick={() => showAllRules = !showAllRules}>
-          {showAllRules ? "Show fewer rules" : `Show all ${tier.rules.length} rules`}
-        </button>
-      {/if}
     {:else}
       <p class="hint">No category rules.</p>
     {/if}
@@ -182,21 +220,24 @@ h2 { margin: 0; font-size: 0.95rem; }
 p { margin-block: 0.5rem; }
 .hint { color: var(--muted); }
 .rule-status { padding: 0.08rem 0.38rem; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-size: 0.8rem; }
-.rules-table { border: 1px solid var(--border); border-radius: 6px; overflow: clip; }
-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-th, td { padding: 0.45rem 0.65rem; text-align: start; overflow-wrap: anywhere; }
-th { background: var(--surface); color: var(--muted); font-weight: 590; }
-th:first-child { width: 46%; }
-tbody td { border-block-start: 1px solid var(--border); }
-td code { color: var(--accent); }
+.category-groups { border: 1px solid var(--border); border-radius: 6px; overflow: clip; }
+.rule-group { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); gap: 0.65rem; padding: 0.55rem 0.65rem; }
+.rule-group + .rule-group { border-block-start: 1px solid var(--border); }
+.rule-group h3 { margin: 0; font-size: inherit; overflow-wrap: anywhere; }
+.rule-group ul { display: grid; gap: 0.2rem; list-style: none; margin: 0; padding: 0; }
+.rule-group li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.15rem 0.55rem; margin: 0; }
+.rule-group code { color: var(--accent); }
+.rule-group span { color: var(--muted); overflow-wrap: anywhere; }
 code { overflow-wrap: anywhere; }
 .file-path { display: flex; align-items: flex-start; gap: 0.4rem; margin-block-start: 1.25rem; color: var(--muted); font-size: 0.82rem; }
 .file-path svg { flex: none; width: 0.95rem; height: 0.95rem; stroke: currentColor; stroke-width: 1.4; }
-.rules-table + .text-action { margin-block-start: 0.45rem; }
+.category-groups + .text-action { margin-block-start: 0.45rem; }
 fieldset { border: 1px solid var(--border); min-inline-size: 0; }
 ol { padding-inline-start: 1.5rem; }
 li { margin-block-end: 0.5rem; }
 li > label { width: 32%; box-sizing: border-box; padding-inline-end: 0.35rem; overflow-wrap: anywhere; }
+.category-start:not(:first-child) { padding-block-start: 0.55rem; border-block-start: 1px solid var(--border); }
+li > .category-name { display: block; margin-block-end: 0.35rem; }
 .order { margin-block-start: 0.35rem; }
 label, .order { display: inline-block; font-size: 0.8rem; }
 input { display: block; width: 100%; }
@@ -212,6 +253,5 @@ button, input {
 button.primary, button:not(:disabled):hover { background: var(--selection); }
 button.primary, button.text-action { color: var(--accent); }
 button.text-action { border: 0; background: transparent; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
-.text-action + .text-action { margin-inline-start: 0.65rem; }
 button:not(:disabled) { cursor: pointer; }
 </style>

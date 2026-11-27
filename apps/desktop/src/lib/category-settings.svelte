@@ -3,24 +3,20 @@
 import type { Categorization, CategoryRule, CategoryRuleDraft } from "./category-settings.js";
 import type { DiffLayout, Project } from "./revisions.js";
 import { invoke } from "@tauri-apps/api/core";
-import { onMount, untrack } from "svelte";
+import { onMount } from "svelte";
 import CategoryRuleForm from "./category-rule-form.svelte";
 
 interface Properties {
   projects: Project[];
-  activeProjectId: number | undefined;
   drafts: Record<string, CategoryRuleDraft | null>;
   onback(): void;
   onsaved(): Promise<void>;
 }
 
-let { projects, activeProjectId, drafts, onback, onsaved }: Properties = $props();
+let { projects, drafts, onback, onsaved }: Properties = $props();
 const configurableProjects = $derived(projects.filter(project => project.mainCheckout !== null));
-let scope = $state(untrack(() => {
-  const project = configurableProjects.find(item => item.id === activeProjectId);
-  return project?.id.toString() ?? "";
-}));
-let section = $state<"general" | "categories">(untrack(() => (scope ? "categories" : "general")));
+let scope = $state("");
+let section = $state<"general" | "categories">("general");
 const checkout = $derived(configurableProjects.find(project => project.id.toString() === scope)?.mainCheckout ?? null);
 
 let loadedCheckout = $state<string | null>();
@@ -98,7 +94,10 @@ async function changeLayout(layout: DiffLayout): Promise<void> {
 </script>
 
 <svelte:window onfocus={refresh} onkeydown={(event) => {
-  if (!saving && !event.defaultPrevented && event.key === "Escape" && event.target !== scopePicker) onback();
+  if (saving || event.defaultPrevented || event.key !== "Escape" || event.target === scopePicker) return;
+
+  if (event.target instanceof HTMLInputElement) event.target.blur();
+  onback();
 }} />
 
 <main class="settings-screen" aria-label="Settings">
