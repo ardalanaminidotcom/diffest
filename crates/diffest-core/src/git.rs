@@ -95,7 +95,7 @@ fn git_with_storage(
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .args(paths);
-    if args.starts_with(&["fetch"]) {
+    if matches!(args, ["fetch", ..] | ["-c", _, "fetch", ..]) {
         command.env("GIT_TERMINAL_PROMPT", "0");
     }
     if let Some(index) = index {
@@ -266,31 +266,43 @@ fn main_worktree(common_directory: &Path, reported: &Path, main_hint: &Path) -> 
 }
 
 pub(crate) fn fetch_branches(checkout: &Path) -> Result<(), String> {
-    git(
-        checkout,
-        &["fetch", "--all", "--no-recurse-submodules", "--no-prune"],
-    )?;
+    // Fetch and remote-tracking ref updates must not run checkout-configured hooks.
+    let scratch =
+        tempfile::tempdir().map_err(|error| format!("Cannot disable Git hooks: {error}"))?;
+    let hooks_path = std::path::absolute(scratch.path())
+        .map_err(|error| format!("Cannot resolve the temporary Git hooks path: {error}"))?;
+    let hooks_path = hooks_path
+        .to_str()
+        .ok_or("The temporary Git hooks path is not UTF-8.")?;
+    let hooks = format!("core.hooksPath={hooks_path}");
+    let run = |args: &[&str]| {
+        let mut configured = vec!["-c", hooks.as_str()];
+        configured.extend_from_slice(args);
+        git(checkout, &configured)
+    };
+    run(&[
+        "fetch",
+        "--all",
+        "--no-recurse-submodules",
+        "--no-auto-maintenance",
+        "--no-prune",
+    ])?;
     // Explicit fetch refspecs can cover local tags; restrict pruning to remote-tracking refs.
-    let stale = git(
-        checkout,
-        &[
-            "fetch",
-            "--all",
-            "--no-recurse-submodules",
-            "--dry-run",
-            "--porcelain",
-            "--prune",
-            "--no-prune-tags",
-        ],
-    )?;
+    let stale = run(&[
+        "fetch",
+        "--all",
+        "--no-recurse-submodules",
+        "--no-auto-maintenance",
+        "--dry-run",
+        "--porcelain",
+        "--prune",
+        "--no-prune-tags",
+    ])?;
     for line in String::from_utf8_lossy(&stale).lines() {
         if let ["-", old, _, reference] = line.split_whitespace().collect::<Vec<_>>().as_slice()
             && reference.starts_with("refs/remotes/")
         {
-            git(
-                checkout,
-                &["update-ref", "--no-deref", "-d", reference, old],
-            )?;
+            run(&["update-ref", "--no-deref", "-d", reference, old])?;
         }
     }
     Ok(())
