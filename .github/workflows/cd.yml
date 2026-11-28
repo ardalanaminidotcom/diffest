@@ -1,37 +1,229 @@
-name: CD
+name: Desktop release
 
 on:
   push:
     tags:
-      - v*[0-9].*[0-9].*[0-9]
+      - 'desktop@v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed Desktop release tag (desktop@vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref_name }}
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    name: Create Release
-
-    concurrency: github-release
-
-    environment:
-      name: release
-      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-
-    permissions:
-      contents: write
-
+  validate:
+    name: Verify Desktop release tag
     runs-on: ubuntu-latest
-
     timeout-minutes: 5
-
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Changelog
-        uses: ardalanamini/auto-changelog@v5
-        id: changelog
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
         with:
-          body: |
-            ${{ steps.changelog.outputs.changelog }}
-          prerelease: ${{ steps.changelog.outputs.prerelease }}
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the tagged commit and version
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Dispatch the release workflow from main."
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^desktop@v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a Desktop release tag in desktop@vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          ref="refs/tags/$RELEASE_TAG"
+          tag_sha=$(git rev-parse "$ref^{tag}")
+          sha=$(git rev-parse "$ref^{commit}")
+          git merge-base --is-ancestor "$sha" HEAD
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            [[ "$sha" == "$(git rev-parse "$GITHUB_SHA^{commit}")" ]]
+          fi
+
+          for object in "tags/$tag_sha" "commits/$sha"; do
+            if [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/$object" --jq .verification.verified)" != true ]]; then
+              echo "GitHub could not verify the signature of $object."
+              exit 1
+            fi
+          done
+
+          git checkout --detach "$sha"
+          version=${RELEASE_TAG#desktop@v}
+          node scripts/release-desktop.mjs --verify "$version"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Package Desktop (${{ matrix.platform }})
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - platform: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - platform: macos-universal
+            runner: macos-15
+            target: universal-apple-darwin
+            bundles: dmg
+          - platform: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: nsis,msi
+          - platform: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+          - platform: linux-arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - platform: linux-x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-desktop
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build Desktop installers
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+          TARGET: ${{ matrix.target }}
+          BUNDLES: ${{ matrix.bundles }}
+        run: pnpm --filter diffest-desktop build --target "$TARGET" --bundles "$BUNDLES" -- --locked
+
+      - name: Collect Desktop installers
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BUNDLES: ${{ matrix.bundles }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          shopt -s nullglob
+          mkdir -p dist
+          IFS=, read -ra formats <<< "$BUNDLES"
+          for format in "${formats[@]}"; do
+            case "$format" in
+              nsis) extension=exe ;;
+              appimage) extension=AppImage ;;
+              *) extension=$format ;;
+            esac
+            packages=(target/"$TARGET"/release/bundle/"$format"/*."$extension")
+            if [[ "${#packages[@]}" != 1 || ! -s "${packages[0]}" ]]; then
+              echo "Expected exactly one non-empty $format package for $PLATFORM."
+              exit 1
+            fi
+            cp -- "${packages[0]}" "dist/Diffest-Desktop-$VERSION-$PLATFORM.$extension"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  draft:
+    name: Assemble desktop release draft
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: release
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify packages and assemble the draft
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.validate.outputs.sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          prefix="Diffest-Desktop-$VERSION"
+          expected=(
+            "$prefix"-macos-{arm64,x64,universal}.dmg
+            "$prefix"-windows-{arm64,x64}.{exe,msi}
+            "$prefix"-linux-{arm64,x64}.{AppImage,deb,rpm}
+          )
+          packages=(dist/*)
+          if [[ "${#packages[@]}" != "${#expected[@]}" ]]; then
+            echo "Expected exactly ${#expected[@]} Desktop installers."
+            exit 1
+          fi
+          for file in "${expected[@]}"; do
+            if [[ ! -s "dist/$file" ]]; then
+              echo "Missing or empty installer: $file"
+              exit 1
+            fi
+          done
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$SHA" ]]
+
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              echo "This tag already has a published release."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "${packages[@]}" --clobber
+          else
+            previous=$(git describe --tags --match 'desktop@v[0-9]*' --abbrev=0 "$SHA^" || true)
+            git log --format='- %s (%h)' "${previous:+$previous..}$SHA" > "$RUNNER_TEMP/desktop-notes.md"
+            gh release create "$RELEASE_TAG" "${packages[@]}" --draft --verify-tag \
+              --title "Diffest Desktop v$VERSION" --notes-file "$RUNNER_TEMP/desktop-notes.md"
+          fi
+
+          diff <(printf '%s\n' "${expected[@]}" | sort) \
+            <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
+          url=$(gh release view "$RELEASE_TAG" --json url --jq .url)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "[Review and publish the Desktop release draft]($url)" >> "$GITHUB_STEP_SUMMARY"
