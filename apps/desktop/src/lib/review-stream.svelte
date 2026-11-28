@@ -177,6 +177,7 @@ onMount(() => {
   header.className = "m-0 px-2 pb-2 text-[0.8rem] text-muted";
   const options: CodeViewOptions<undefined, undefined> = {
     overflow            : "wrap",
+    stickyHeaders       : true,
     renderCodeViewHeader: () => header,
     renderHeaderPrefix  : (file, { item }) => headerSlot(item.id, "prefix"),
     renderHeaderMetadata: (file, { item }) => headerSlot(item.id, "metadata"),
