@@ -1,0 +1,173 @@
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(".");
+
+@theme {
+  --color-canvas: light-dark(#fbfcfb, #171b1e);
+  --color-surface: light-dark(#f4f6f5, #1b2024);
+  --color-toolbar: light-dark(#edf1ef, #20262a);
+  --color-divider: light-dark(#d6dfdc, #343c41);
+  --color-foreground: light-dark(#202d30, #e3e8eb);
+  --color-muted: light-dark(#526267, #a4afb7);
+  --color-accent: light-dark(#25596a, #a4d7e6);
+  --color-selection: light-dark(#e2edf0, #273941);
+  --color-added: light-dark(#e2f3e9, #21392f);
+  --color-removed: light-dark(#f9e7ea, #402b32);
+  --color-added-ink: light-dark(#276044, #9bdcb4);
+  --color-removed-ink: light-dark(#8f3b4b, #f2aeba);
+  --color-syntax-keyword: light-dark(#65478e, #c5b9ee);
+  --color-syntax-name: light-dark(#215d78, #a9cee5);
+  --color-syntax-string: light-dark(#765424, #e7d3a0);
+  --color-syntax-number: light-dark(#8a4c17, #e4b595);
+  --font-sans: system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --font-diff: ui-monospace, "SF Mono", Consolas, monospace;
+  --ease-sidebar: cubic-bezier(0.2, 0.72, 0.28, 1);
+}
+
+@custom-variant compact (@media (max-width: 520px));
+@custom-variant wrap-toolbar (@media (max-width: 680px));
+
+@layer base {
+  html {
+    @apply scheme-light-dark bg-canvas font-sans text-[13px]/[1.45] text-foreground accent-accent;
+  }
+
+  body {
+    @apply m-0;
+  }
+
+  *::selection {
+    @apply bg-selection text-foreground;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}
+
+@layer components {
+  .control {
+    @apply rounded-[5px] border border-divider bg-canvas [color:inherit] [font:inherit];
+  }
+
+  .workspace-button {
+    @apply box-border min-w-0 px-[0.52rem] py-[0.3rem] enabled:cursor-pointer disabled:cursor-default disabled:opacity-[0.58];
+  }
+
+  .toolbar-icon {
+    @apply block size-4 stroke-current stroke-[1.4];
+  }
+
+  /* Diff rows and syntax tokens are generated outside the Svelte template. */
+  .patch-rows {
+    table, pre {
+      @apply font-diff text-[0.875rem]/[1.55];
+    }
+
+    table {
+      @apply w-full table-fixed border-separate border-spacing-0;
+    }
+
+    th, td {
+      @apply p-0 text-start align-top;
+    }
+
+    thead th {
+      @apply px-3 py-[0.35rem] text-[0.72rem] font-semibold text-muted;
+    }
+
+    .split th + th, .split td:nth-child(3) {
+      @apply border-s border-divider;
+    }
+
+    .block-heading {
+      @apply sr-only;
+    }
+
+    .hunk-start td {
+      @apply border-bs border-divider;
+    }
+
+    code {
+      @apply wrap-anywhere whitespace-pre-wrap [font:inherit] [tab-size:4];
+    }
+
+    .number {
+      @apply w-[3.75em];
+    }
+
+    .line-number {
+      @apply pe-[0.4rem] text-end text-muted tabular-nums;
+    }
+
+    .line {
+      @apply relative ps-[1.35rem] pe-2;
+    }
+
+    .line::before {
+      @apply absolute start-[0.3rem];
+    }
+
+    .line.added::before {
+      @apply text-added-ink content-['+'];
+    }
+
+    .line.removed::before {
+      @apply text-removed-ink content-['−'];
+    }
+
+    .added {
+      @apply bg-added;
+    }
+
+    .removed {
+      @apply bg-removed;
+    }
+
+    .added .line-number:nth-child(2), .line-number.added {
+      @apply text-added-ink;
+    }
+
+    .removed .line-number:first-child, .line-number.removed {
+      @apply text-removed-ink;
+    }
+
+    .added > .line-number:first-child, .line-number.added {
+      @apply [box-shadow:inset_1px_0_var(--color-added-ink)];
+    }
+
+    .removed > .line-number:first-child, .line-number.removed {
+      @apply [box-shadow:inset_1px_0_var(--color-removed-ink)];
+    }
+
+    .blank {
+      @apply bg-surface;
+    }
+
+    pre {
+      @apply m-0 px-3;
+    }
+
+    .hljs-keyword, .hljs-selector-tag, .hljs-literal {
+      @apply text-syntax-keyword;
+    }
+
+    .hljs-title, .hljs-tag, .hljs-attr, .hljs-built_in {
+      @apply text-syntax-name;
+    }
+
+    .hljs-string, .hljs-regexp {
+      @apply text-syntax-string;
+    }
+
+    .hljs-number, .hljs-symbol {
+      @apply text-syntax-number;
+    }
+
+    .hljs-comment {
+      @apply text-muted;
+    }
+  }
+}

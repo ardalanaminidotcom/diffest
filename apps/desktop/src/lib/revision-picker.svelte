@@ -114,6 +114,21 @@ function submitSource(event: SubmitEvent): void {
   const term = reference.toLowerCase();
   chooseSource(matchingBranches(term)[0] ?? matchingCommits(term)[0]?.id ?? reference);
 }
+
+const revisionButton = `control cursor-pointer px-[0.4rem] py-[0.3rem] enabled:hover:bg-selection
+  disabled:cursor-default disabled:opacity-[0.55]`;
+const optionButton = `${ revisionButton } flex w-full items-center gap-[0.4rem] border-transparent bg-transparent
+  text-start wrap-anywhere aria-[current=true]:bg-selection`;
+const optionNote = "ms-auto whitespace-nowrap text-muted";
+const menuLabel = "mx-[0.4rem] mt-[0.4rem] mb-[0.1rem] text-[0.78rem] text-muted";
+const trigger = `control flex cursor-pointer items-center gap-[0.3rem] px-[0.4rem] py-[0.3rem] whitespace-nowrap
+  group-open:bg-selection hover:bg-selection [&::-webkit-details-marker]:hidden`;
+const triggerLabel = "max-w-[min(10rem,16vw)] min-w-0 truncate";
+const icon = "size-[0.85rem] flex-none stroke-muted stroke-[1.3] [stroke-linecap:round] [stroke-linejoin:round]";
+const panel = `absolute top-[calc(100%+0.3rem)] z-3 max-h-[60vh] w-[min(20rem,80vw)] overflow-auto
+  rounded-[7px] border border-divider bg-surface p-[0.4rem] shadow-[0_6px_16px_#0002]`;
+const searchForm = "m-0 mb-[0.35rem] flex items-center gap-[0.3rem]";
+const searchInput = "control min-w-0 flex-1 px-[0.4rem] py-[0.3rem]";
 </script>
 
 <svelte:window onpointerdown={(event) => {
@@ -133,49 +148,49 @@ function submitSource(event: SubmitEvent): void {
   {@const filteredBranches = matchingBranches(term)}
   {@const commits = matchingCommits(term)}
   {#if filteredBranches.length}
-    <p>Branches</p>
+    <p class={menuLabel}>Branches</p>
     {#each filteredBranches as branch (branch)}
-      <button class="option" type="button" title={label(branch)} aria-current={selected === branch}
+      <button class={optionButton} type="button" title={label(branch)} aria-current={selected === branch}
         onclick={() => choose(branch)} disabled={busy}>
-        {label(branch)}{#if revisions.defaultBranch === branch}<small>Default</small>{/if}
+        {label(branch)}{#if revisions.defaultBranch === branch}<small class={optionNote}>Default</small>{/if}
       </button>
     {/each}
   {/if}
   {#if commits.length}
-    <p>Recent commits</p>
+    <p class={menuLabel}>Recent commits</p>
     {#each commits as commit (commit.id)}
-      <button class="option" type="button" aria-current={selected === commit.id} onclick={() => choose(commit.id)} disabled={busy}>
-        <code>{commit.id.slice(0, 7)}</code> <span>{commit.subject}</span>
+      <button class={optionButton} type="button" aria-current={selected === commit.id} onclick={() => choose(commit.id)} disabled={busy}>
+        <code>{commit.id.slice(0, 7)}</code> <span class="min-w-0 truncate">{commit.subject}</span>
       </button>
     {/each}
   {/if}
 {/snippet}
 
 {#snippet fetchControl()}
-  <div class="fetch-control">
-    <p role="status">{fetchStatus}</p>
-    <button type="button" onclick={onfetch} disabled={busy}>Fetch branches</button>
+  <div class="sticky bottom-0 flex items-center justify-between gap-[0.4rem] border-t border-divider bg-surface pt-[0.35rem]">
+    <p class="m-0 text-[0.78rem] wrap-anywhere text-muted" role="status">{fetchStatus}</p>
+    <button class={[revisionButton, "flex-none"]} type="button" onclick={onfetch} disabled={busy}>Fetch branches</button>
   </div>
 {/snippet}
 
-<div class="revision-picker" bind:this={picker}>
-  <details name="workspace-menu" class="source" bind:open={sourceOpen}>
-    <summary bind:this={sourceTrigger} aria-label={source ? "Source " + label(source) : "Choose source"} title={label(source) || "Choose source"}>
-      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M4 5v6m0-3c0-3 7 0 7-3" /><circle cx="4" cy="3.5" r="1.5" /><circle cx="4" cy="12.5" r="1.5" /><circle cx="11" cy="3.5" r="1.5" /></svg>
-      <span>{label(source) || "Choose source"}</span>
-      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
+<div class="revision-picker flex min-w-0 shrink items-center gap-[0.35rem]" bind:this={picker}>
+  <details name="workspace-menu" class="source group relative min-w-0" bind:open={sourceOpen}>
+    <summary class={trigger} bind:this={sourceTrigger} aria-label={source ? "Source " + label(source) : "Choose source"} title={label(source) || "Choose source"}>
+      <svg class={icon} aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M4 5v6m0-3c0-3 7 0 7-3" /><circle cx="4" cy="3.5" r="1.5" /><circle cx="4" cy="12.5" r="1.5" /><circle cx="11" cy="3.5" r="1.5" /></svg>
+      <span class={triggerLabel}>{label(source) || "Choose source"}</span>
+      <svg class={icon} aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
     </summary>
-    <div class="panel">
-      <form id="compare" onsubmit={submitSource}>
-        <input id="base" bind:this={sourceInput} aria-label="Search branches or commits" placeholder="Branch or commit" bind:value={query} disabled={busy} />
-        <button type="submit" disabled={busy || !query.trim()}>Compare</button>
+    <div class={[panel, "left-0"]}>
+      <form class={searchForm} id="compare" onsubmit={submitSource}>
+        <input class={searchInput} id="base" bind:this={sourceInput} aria-label="Search branches or commits" placeholder="Branch or commit" bind:value={query} disabled={busy} />
+        <button class={revisionButton} type="submit" disabled={busy || !query.trim()}>Compare</button>
       </form>
       {#if !search || "head".includes(search)}
-        <button class="option" type="button" onclick={() => chooseSource("HEAD")} disabled={busy}>HEAD</button>
+        <button class={optionButton} type="button" onclick={() => chooseSource("HEAD")} disabled={busy}>HEAD</button>
       {/if}
       {@render results(search, source, chooseSource)}
       {#if source && target !== "Working tree"}
-        <button class="option mode" type="button" disabled={busy} onclick={() => {
+        <button class={[optionButton, "mode border-t-divider"]} type="button" disabled={busy} onclick={() => {
           closeSource();
           oncompare(source, target, mode === "between" ? "divergence" : "between");
         }}>{mode === "between" ? "Compare since divergence" : "Compare branch tips"}</button>
@@ -183,94 +198,34 @@ function submitSource(event: SubmitEvent): void {
       {@render fetchControl()}
     </div>
   </details>
-  <svg class="direction" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M13 8H3m4-4L3 8l4 4"/></svg>
-  <details name="workspace-menu" class="target" bind:open={targetOpen}>
-    <summary bind:this={targetTrigger} aria-label={"Target " + label(target)} title={label(target)}>
-      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3"/><path d="M1 8h4m6 0h4"/></svg>
-      <span>{label(target)}</span>
-      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
+  <svg class={icon} aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="M13 8H3m4-4L3 8l4 4"/></svg>
+  <details name="workspace-menu" class="target group relative min-w-0" bind:open={targetOpen}>
+    <summary class={trigger} bind:this={targetTrigger} aria-label={"Target " + label(target)} title={label(target)}>
+      <svg class={icon} aria-hidden="true" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3"/><path d="M1 8h4m6 0h4"/></svg>
+      <span class={triggerLabel}>{label(target)}</span>
+      <svg class={icon} aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3"/></svg>
     </summary>
-    <div class="panel">
-      <form onsubmit={(event) => {
+    <div class={[panel, "end-0"]}>
+      <form class={searchForm} onsubmit={(event) => {
         event.preventDefault();
         const reference = matchingReference(targetQuery) ?? targetQuery.trim();
         if (reference) chooseTarget(matchingReference(reference) ?? reference);
       }}>
-        <input aria-label="Target revision" placeholder="Branch or commit" bind:this={targetInput}
+        <input class={searchInput} aria-label="Target revision" placeholder="Branch or commit" bind:this={targetInput}
           bind:value={targetQuery} disabled={busy} />
-        <button type="submit" disabled={busy || !targetQuery.trim()}>Use</button>
+        <button class={revisionButton} type="submit" disabled={busy || !targetQuery.trim()}>Use</button>
       </form>
       {#if "head".includes(targetSearch)}
-        <button class="option" type="button" aria-current={target === "HEAD"} onclick={() => chooseTarget("HEAD")}
-          disabled={busy}>HEAD <small>Current commit</small></button>
+        <button class={optionButton} type="button" aria-current={target === "HEAD"} onclick={() => chooseTarget("HEAD")}
+          disabled={busy}>HEAD <small class={optionNote}>Current commit</small></button>
       {/if}
       {#if "working tree".includes(targetSearch)}
-        <button class="option" type="button" title="Working tree" aria-current={target === "Working tree"}
+        <button class={optionButton} type="button" title="Working tree" aria-current={target === "Working tree"}
           onclick={() => chooseTarget("Working tree")}
-          disabled={busy}>Working tree <small>Local edits</small></button>
+          disabled={busy}>Working tree <small class={optionNote}>Local edits</small></button>
       {/if}
       {@render results(targetSearch, target, chooseTarget)}
       {@render fetchControl()}
     </div>
   </details>
 </div>
-
-<style>
-.revision-picker { display: flex; flex: 0 1 auto; align-items: center; gap: 0.35rem; min-width: 0; }
-details { min-width: 0; position: relative; }
-summary, button, input {
-  font: inherit;
-  color: inherit;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--canvas);
-}
-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.3rem 0.4rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-summary::-webkit-details-marker { display: none; }
-summary span, .option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-summary span { max-width: min(10rem, 16vw); }
-summary:hover, details[open] summary, button:hover:not(:disabled), .option[aria-current="true"] { background: var(--selection); }
-svg { width: 0.85rem; height: 0.85rem; flex: none; stroke: var(--muted); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
-.panel {
-  position: absolute;
-  inset: calc(100% + 0.3rem) auto auto 0;
-  z-index: 3;
-  width: min(20rem, 80vw);
-  max-height: 60vh;
-  overflow: auto;
-  padding: 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  box-shadow: 0 6px 16px #0002;
-}
-.target .panel { inset-inline: auto 0; }
-form { display: flex; align-items: center; gap: 0.3rem; margin: 0 0 0.35rem; }
-.fetch-control {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.4rem;
-  padding-top: 0.35rem;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-.fetch-control p { margin: 0; overflow-wrap: anywhere; }
-.fetch-control button { flex: none; }
-input { flex: 1; min-width: 0; padding: 0.3rem 0.4rem; }
-button { padding: 0.3rem 0.4rem; cursor: pointer; }
-button:disabled { opacity: 0.55; cursor: default; }
-.option { display: flex; width: 100%; gap: 0.4rem; align-items: center; text-align: start; border-color: transparent; background: transparent; overflow-wrap: anywhere; }
-.option small { margin-inline-start: auto; color: var(--muted); white-space: nowrap; }
-.option.mode { border-top-color: var(--border); }
-p { margin: 0.4rem 0.4rem 0.1rem; font-size: 0.78rem; color: var(--muted); }
-</style>

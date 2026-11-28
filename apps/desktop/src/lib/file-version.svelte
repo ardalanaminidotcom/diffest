@@ -36,28 +36,15 @@ function imageLoaded(): void {
 }
 </script>
 
-<div class="version">
-  <h3>{label}</h3>
+<div class="min-w-0 rounded-[0.35rem] border border-divider p-[0.65rem] text-[0.85rem]">
+  <h3 class="m-0 mb-1 text-[length:inherit]">{label}</h3>
   {#if version?.preview && !previewFailed}
-    <img bind:this={image} src={version.preview} alt={`${ label } preview of ${ version.path }`}
+    <img class="mx-auto mt-2 block max-h-96 max-w-full" bind:this={image} src={version.preview} alt={`${ label } preview of ${ version.path }`}
       onload={imageLoaded} onerror={() => previewFailed = true} />
     {#if dimensions}
-      <p>{dimensions.width} × {dimensions.height} px · {aspectRatio(dimensions.width, dimensions.height)}</p>
+      <p class="m-0 mt-[0.4rem] text-muted">{dimensions.width} × {dimensions.height} px · {aspectRatio(dimensions.width, dimensions.height)}</p>
     {/if}
   {:else}
-    <p>{version ? "Preview unavailable" : "File absent"}</p>
+    <p class="m-0 mt-[0.4rem] text-muted">{version ? "Preview unavailable" : "File absent"}</p>
   {/if}
 </div>
-
-<style>
-.version {
-  min-width: 0;
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  font-size: 0.85rem;
-}
-h3 { margin: 0 0 0.25rem; font-size: inherit; }
-p { margin: 0.4rem 0 0; color: var(--muted); }
-img { display: block; max-width: 100%; max-height: 24rem; margin: 0.5rem auto 0; }
-</style>
