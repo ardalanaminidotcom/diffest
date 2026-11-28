@@ -1,5 +1,6 @@
 <script lang="ts">
 import type {
+  ChangedFile,
   CommitReviewProgress,
   Comparison,
   ComparisonMode,
@@ -24,8 +25,8 @@ import {
 } from "../lib/category-settings.js";
 import CategorySettings from "../lib/category-settings.svelte";
 import { fileName } from "../lib/file-details.js";
-import { summarizePatch } from "../lib/patch.js";
-import ReviewFile from "../lib/review-file.svelte";
+import { parseReviewPatch } from "../lib/patch.js";
+import ReviewStream from "../lib/review-stream.svelte";
 import RevisionPicker from "../lib/revision-picker.svelte";
 
 const statusLabels: Record<string, string> = {
@@ -61,10 +62,9 @@ interface CategorizedFiles {
   categories: FileCategory[];
 }
 
-interface ReviewPosition {
-  file: HTMLElement;
-  offset: number;
-  selectedIndex: number;
+interface ParsedFile {
+  file: ChangedFile;
+  patch: ReturnType<typeof parseReviewPatch>;
 }
 /* eslint-enable @stylistic/key-spacing */
 
@@ -112,18 +112,30 @@ const filesAction = $derived(filesCollapsed ? "Open Files sidebar" : "Collapse F
 let projectsCollapsed = $state(false);
 const projectsAction = $derived(projectsCollapsed ? "Open Projects sidebar" : "Collapse Projects sidebar");
 let settingsOpen = $state(false);
+let settingsFileIndex: number | null = null;
 const drafts: Record<string, CategoryRuleDraft | null> = {};
 let settingsAnnouncement = $state("");
 let settingsButton: HTMLButtonElement | undefined = $state();
-let reviewPosition: ReviewPosition | null = null;
 let pendingSettingsRead = 0;
 let categorizedCheckout: string | null | undefined;
 let categorizedPaths: string[] = [];
 let projectSidebar: HTMLElement | undefined = $state();
-let fileStream: HTMLElement | undefined = $state();
+let reviewStream: ReturnType<typeof ReviewStream> | undefined = $state();
 const activeProject = $derived(projects.find(project => project.id === activeProjectId));
 const activeBranch = $derived(activeProject?.worktrees.find(worktree => worktree.path === activeCheckout)?.branch);
-const patchSummaries = $derived(files.map(file => summarizePatch(file.patch)));
+let patchCache: ParsedFile[] = [];
+const patchSummaries = $derived.by(() => {
+  patchCache = files.map((file, index) => {
+    const previous = patchCache.at(index);
+    if (previous?.file.patch === file.patch && previous.file.path === file.path
+      && previous.file.previousPath === file.previousPath) return previous;
+    return {
+      file,
+      patch: parseReviewPatch(file),
+    };
+  });
+  return patchCache.map(({ patch }) => patch);
+});
 const lineTotals = $derived(patchSummaries.reduce((totals, patch) => ({
   added  : totals.added + patch.added,
   removed: totals.removed + patch.removed,
@@ -131,8 +143,6 @@ const lineTotals = $derived(patchSummaries.reduce((totals, patch) => ({
   added  : 0,
   removed: 0,
 }));
-const mountedRowLimit = 20_000;
-const windowRows = $derived(patchSummaries.reduce((rows, patch) => rows + patch.lineCount, 0) > mountedRowLimit);
 const reviewedWorktreeCount = $derived(worktreeReview?.filter(patch => patch.reviewed).length);
 const reviewedFileCount = $derived(reviewedWorktreeCount ?? review?.summary.reviewedCount ?? 0);
 
@@ -183,30 +193,17 @@ $effect(() => {
 });
 
 function openSettings(): void {
+  settingsFileIndex = files.length > 0 ? selectedIndex : null;
   settingsOpen = true;
-  if (!fileStream) return;
-
-  const top = fileStream.getBoundingClientRect().top;
-  const file = [...fileStream.querySelectorAll<HTMLElement>(".review-file")]
-    .find(section => section.getBoundingClientRect().bottom > top);
-  if (!file) return;
-
-  reviewPosition = {
-    file,
-    offset: file.getBoundingClientRect().top - top,
-    selectedIndex,
-  };
 }
 
 async function closeSettings(): Promise<void> {
   settingsOpen = false;
   await tick();
-  if (reviewPosition && fileStream?.contains(reviewPosition.file)) {
-    const offset = reviewPosition.file.getBoundingClientRect().top - fileStream.getBoundingClientRect().top;
-    if (offset !== reviewPosition.offset) fileStream.scrollTop += offset - reviewPosition.offset;
-    if (selectedIndex !== reviewPosition.selectedIndex) jumpedFileIndex = reviewPosition.selectedIndex;
-  }
-  reviewPosition = null;
+  const selected = settingsFileIndex;
+  if (selected !== null && selected < files.length && selectedIndex !== selected) jumpedFileIndex = selected;
+
+  settingsFileIndex = null;
   settingsButton?.focus({ preventScroll: true });
 }
 
@@ -217,9 +214,7 @@ function startFileStream(): void {
 
 function jumpToFile(index: number): void {
   jumpedFileIndex = index;
-  const file = fileStream?.querySelector<HTMLElement>(`#file-review-${ index }`);
-  file?.querySelector<HTMLButtonElement>("h2 button")?.focus({ preventScroll: true });
-  file?.scrollIntoView({ block: "start" });
+  reviewStream?.jumpTo(index);
 }
 
 async function run(action: () => Promise<void>): Promise<void> {
@@ -633,26 +628,9 @@ function stageWorktreePatch(patch: WorktreePatch): void {
         filesCollapsed ? "grid-cols-[minmax(0,1fr)_0px]" : "grid-cols-[minmax(0,1fr)_max(12rem,32%)] compact:grid-cols-[minmax(0,1fr)_max(9rem,34%)]",
       ]}>
         {#key reviewSession}
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex (Allow keyboard scrolling of the file stream.) -->
-          <section class="file-stream grid min-h-0 min-w-0 content-start gap-[0.65rem] overflow-auto p-[0.65rem] [scrollbar-gutter:stable] focus-visible:-outline-offset-2"
-            aria-label="File diffs" tabindex="0" bind:this={fileStream}>
-            {#if comparison}
-              <p class="m-0 text-[0.8rem] text-muted" title={`${ comparison.start } ← ${ comparison.end }`}>
-                {comparison.mode === "divergence" ? "Changes since divergence" : "Changes between revisions"}
-                <code class="ms-[0.45rem]">{comparison.start.slice(0, 7)} ← {comparison.end.slice(0, 7)}</code>
-              </p>
-            {:else if worktreeReview}
-              <p class="m-0 text-[0.8rem] text-muted">Uncommitted changes · staged and unstaged</p>
-            {/if}
-            {#each orderedIndices as index (worktreeReview?.[index]?.fingerprint ?? index)}
-              {@const patch = worktreeReview?.[index]}
-              <ReviewFile {index} file={files[index]} {patch} checkout={activeCheckout} {comparison} {layout} busy={busy || comparisonUpdate === "branch_deleted"}
-                category={categories === null ? null : categories[index]?.category}
-                {windowRows}
-                reviewed={patch?.reviewed ?? reviewedFiles.has(index)}
-                onreview={() => toggleFileReviewed(index)} onstage={stageWorktreePatch} />
-            {/each}
-          </section>
+          <ReviewStream {files} order={orderedIndices} {categories} {reviewedFiles} worktree={worktreeReview} {comparison} checkout={activeCheckout}
+            {layout} patches={patchSummaries} busy={busy || comparisonUpdate === "branch_deleted"}
+            onreview={toggleFileReviewed} onstage={stageWorktreePatch} bind:this={reviewStream} />
         {/key}
         <div class="flex min-h-0 min-w-0 justify-end overflow-clip">
           <aside id="changed-files" class="box-border w-(--files-width) flex-none overflow-auto border-s border-divider bg-surface" aria-label="File sidebar" inert={filesCollapsed}>

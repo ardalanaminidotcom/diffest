@@ -12,7 +12,6 @@ export default defineConfig({
   ],
   resolve: { conditions: ["browser"] },
   test   : {
-    css        : { include: [/\/app\.css\?inline$/u] },
     environment: "happy-dom",
     coverage   : {
       include   : ["src/**/*.{svelte,ts}"],
