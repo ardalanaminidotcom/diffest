@@ -41,3 +41,8 @@ allowBuilds:
   "@parcel/watcher": false
   lefthook: false
   unrs-resolver: false
+
+# Keep release style-src strict while Pierre requires inline CSS.
+# https://github.com/pierrecomputer/pierre/issues/1251
+patchedDependencies:
+  '@pierre/diffs@1.7.2': patches/@pierre__diffs@1.7.2.patch

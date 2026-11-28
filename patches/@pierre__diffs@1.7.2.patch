@@ -1,0 +1,285 @@
+diff --git a/dist/components/File.js b/dist/components/File.js
+index e715452aa752ce40908c753f23b07b27cab4dfac..3dab23f0abddf809e74198b3cf1f94f3e5853468 100644
+--- a/dist/components/File.js
++++ b/dist/components/File.js
+@@ -35,7 +35,8 @@ import { adoptEditSessionAnnotations, resolveEditSessionSlotName, writeEditSessi
+ import { getFileRendererOptions } from "../utils/getFileRendererOptions.js";
+ import { getOrCreateCodeNode } from "../utils/getOrCreateCodeNode.js";
+ import { guardWebKitScrollDuringRebuild } from "../utils/guardWebKitScrollDuringRebuild.js";
+-import { upsertHostThemeStyle } from "../utils/hostTheme.js";
++import { applyGeneratedStyles, serializeStyledHtml } from "../utils/generatedStyles.js";
++import { removeHostThemeStyle, upsertHostThemeStyle } from "../utils/hostTheme.js";
+ import { prerenderHTMLIfNecessary } from "../utils/prerenderHTMLIfNecessary.js";
+ import { setPreNodeProperties } from "../utils/setWrapperNodeProps.js";
+ import { isHandledWorkerPoolError } from "../worker/errors.js";
+@@ -864,7 +865,7 @@ var File = class {
+ 		this.headerCustom?.remove();
+ 		this.pre?.remove();
+ 		this.spriteSVG?.remove();
+-		this.themeCSSStyle?.remove();
++		removeHostThemeStyle(this.themeCSSStyle);
+ 		this.unsafeCSSStyle?.remove();
+ 		this.bufferAfter = void 0;
+ 		this.bufferBefore = void 0;
+@@ -997,7 +998,11 @@ var File = class {
+ 	hydrateMeasuredScrollbar() {
+ 		const shadowRoot = this.fileContainer?.shadowRoot;
+ 		if (shadowRoot == null || this.themeCSSStyle == null) return;
+-		this.themeCSSStyle.textContent = patchScrollbarGutterSize(this.themeCSSStyle.textContent ?? "", getMeasuredScrollbarGutter(shadowRoot));
++		this.themeCSSStyle = upsertHostThemeStyle({
++			shadowRoot,
++			currentNode: this.themeCSSStyle,
++			themeCSS: patchScrollbarGutterSize(this.themeCSSStyle.textContent ?? "", getMeasuredScrollbarGutter(shadowRoot))
++		});
+ 	}
+ 	shouldGuardRebuildScroll() {
+ 		return this.editor != null && isSafari();
+@@ -1048,7 +1053,8 @@ var File = class {
+ 	createColumns(code, rowCount) {
+ 		const gutter = createGutterWrapper();
+ 		gutter.properties.style = `grid-row: span ${rowCount}`;
+-		code.innerHTML = hastToHtml([gutter, createContentColumn([], rowCount)]);
++		code.innerHTML = serializeStyledHtml([gutter, createContentColumn([], rowCount)]);
++		applyGeneratedStyles(code);
+ 		const columns = this.getColumnPair(code);
+ 		if (columns == null) throw new Error("File.createColumns: the columns did not parse");
+ 		return columns;
+diff --git a/dist/components/FileDiff.js b/dist/components/FileDiff.js
+index 7091e8a5606046d790cdb172df4b6981dc23634e..c04d9158186039daf092e5c8801a4477a1597c39 100644
+--- a/dist/components/FileDiff.js
++++ b/dist/components/FileDiff.js
+@@ -32,7 +32,8 @@ import { createSVGSpriteElement, hydrateSVGSpriteElement } from "../utils/create
+ import { adoptEditSessionAnnotations, resolveEditSessionSlotName, writeEditSessionAnnotations } from "../utils/editSessionAnnotations.js";
+ import { getOrCreateCodeNode } from "../utils/getOrCreateCodeNode.js";
+ import { guardWebKitScrollDuringRebuild } from "../utils/guardWebKitScrollDuringRebuild.js";
+-import { upsertHostThemeStyle } from "../utils/hostTheme.js";
++import { applyGeneratedStyles, serializeStyledHtml } from "../utils/generatedStyles.js";
++import { removeHostThemeStyle, upsertHostThemeStyle } from "../utils/hostTheme.js";
+ import { prerenderHTMLIfNecessary } from "../utils/prerenderHTMLIfNecessary.js";
+ import { setPreNodeProperties } from "../utils/setWrapperNodeProps.js";
+ import { isHandledWorkerPoolError } from "../worker/errors.js";
+@@ -1188,7 +1189,7 @@ var FileDiff = class {
+ 		this.headerCustom?.remove();
+ 		this.pre?.remove();
+ 		this.spriteSVG?.remove();
+-		this.themeCSSStyle?.remove();
++		removeHostThemeStyle(this.themeCSSStyle);
+ 		this.unsafeCSSStyle?.remove();
+ 		this.bufferAfter = void 0;
+ 		this.bufferBefore = void 0;
+@@ -1490,7 +1491,11 @@ var FileDiff = class {
+ 	hydrateMeasuredScrollbar() {
+ 		const shadowRoot = this.fileContainer?.shadowRoot;
+ 		if (shadowRoot == null || this.themeCSSStyle == null) return;
+-		this.themeCSSStyle.textContent = patchScrollbarGutterSize(this.themeCSSStyle.textContent ?? "", getMeasuredScrollbarGutter(shadowRoot));
++		this.themeCSSStyle = upsertHostThemeStyle({
++			shadowRoot,
++			currentNode: this.themeCSSStyle,
++			themeCSS: patchScrollbarGutterSize(this.themeCSSStyle.textContent ?? "", getMeasuredScrollbarGutter(shadowRoot))
++		});
+ 	}
+ 	shouldGuardRebuildScroll() {
+ 		return this.editor != null && isSafari();
+@@ -1528,7 +1533,8 @@ var FileDiff = class {
+ 	createColumns(code, rowCount) {
+ 		const gutter = createGutterWrapper();
+ 		gutter.properties.style = `grid-row: span ${rowCount}`;
+-		code.innerHTML = hastToHtml([gutter, createContentColumn([], rowCount)]);
++		code.innerHTML = serializeStyledHtml([gutter, createContentColumn([], rowCount)]);
++		applyGeneratedStyles(code);
+ 		const columns = this.getColumnPair(code);
+ 		if (columns == null) throw new Error("FileDiff.createColumns: the columns did not parse");
+ 		return columns;
+diff --git a/dist/dom/ColumnReconciler.js b/dist/dom/ColumnReconciler.js
+index 545a3446a17190214924f5fc445c51bb1a24db52..311510e528b9ca7785b0770579a4552b45a1b81a 100644
+--- a/dist/dom/ColumnReconciler.js
++++ b/dist/dom/ColumnReconciler.js
+@@ -1,4 +1,5 @@
+-import { attributeFor, hastToHtml } from "../utils/hastToHtml.js";
++import { applyGeneratedStyle, applyGeneratedStyles, generatedStyleAttribute, serializeStyledHtml as hastToHtml } from "../utils/generatedStyles.js";
++import { attributeFor } from "../utils/hastToHtml.js";
+ //#region src/dom/ColumnReconciler.ts
+ /**
+ * Keeps a code column's gutter and content children in step with a list of
+@@ -26,6 +27,8 @@ var ColumnReconciler = class {
+ 	replaceAll(specs) {
+ 		this.#gutter.innerHTML = hastToHtml(specs.map((spec) => spec.gutter));
+ 		this.#content.innerHTML = hastToHtml(specs.map((spec) => spec.content));
++		applyGeneratedStyles(this.#gutter);
++		applyGeneratedStyles(this.#content);
+ 		this.#rows.clear();
+ 		this.#unindexed = {
+ 			specs,
+@@ -225,6 +228,7 @@ function insertRun(parent, cursor, cells) {
+ 	let node = cursor == null ? parent.lastElementChild : cursor.previousElementSibling;
+ 	for (let index = cells.length - 1; index >= 0; index--) {
+ 		if (!(node instanceof HTMLElement)) throw new Error("ColumnReconciler: a row cell did not parse to an element");
++		applyGeneratedStyles(node);
+ 		elements[index] = node;
+ 		node = node.previousElementSibling;
+ 	}
+@@ -237,6 +241,7 @@ function patchCell(element, previous, next) {
+ 		const replacement = element.previousElementSibling;
+ 		element.remove();
+ 		if (!(replacement instanceof HTMLElement)) throw new Error("ColumnReconciler: a row cell did not parse to an element");
++		applyGeneratedStyles(replacement);
+ 		return {
+ 			element: replacement,
+ 			reset: true
+@@ -247,7 +252,10 @@ function patchCell(element, previous, next) {
+ 		syncAttributes(element, next);
+ 		reset = true;
+ 	}
+-	if (previous == null || previous.children !== next.children) element.innerHTML = hastToHtml(next.children);
++	if (previous == null || previous.children !== next.children) {
++		element.innerHTML = hastToHtml(next.children);
++		applyGeneratedStyles(element);
++	}
+ 	return {
+ 		element,
+ 		reset
+@@ -260,7 +268,9 @@ function patchAttributes(element, previous, next) {
+ 		if (attribute === void 0) return false;
+ 		if (attribute === null) continue;
+ 		nextNames.add(attribute.name);
+-		if (element.getAttribute(attribute.name) !== attribute.value) element.setAttribute(attribute.name, attribute.value);
++		if (attribute.name === "style") {
++			if (previous.properties[key] !== next.properties[key]) applyGeneratedStyle(element, attribute.value);
++		} else if (element.getAttribute(attribute.name) !== attribute.value) element.setAttribute(attribute.name, attribute.value);
+ 	}
+ 	for (const key in previous.properties) {
+ 		const attribute = attributeFor(key, previous.properties[key]);
+@@ -280,7 +290,8 @@ function syncAttributes(element, next) {
+ 	for (const name of element.getAttributeNames()) if (!target.hasAttribute(name)) element.removeAttribute(name);
+ 	for (const name of target.getAttributeNames()) {
+ 		const value = target.getAttribute(name) ?? "";
+-		if (element.getAttribute(name) !== value) element.setAttribute(name, value);
++		if (name === generatedStyleAttribute || name === "style") applyGeneratedStyle(element, value);
++		else if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+ 	}
+ }
+ //#endregion
+diff --git a/dist/utils/generatedStyles.js b/dist/utils/generatedStyles.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..9350cfd11ad20e81ccd0c2a8dc4dc440b4935740
+--- /dev/null
++++ b/dist/utils/generatedStyles.js
+@@ -0,0 +1,37 @@
++import { hastToHtml } from "./hastToHtml.js";
++
++export const generatedStyleAttribute = "data-diffs-generated-style";
++const declarationsByText = new Map();
++let parser;
++
++// Keep Pierre's HTML serializer and escaping. Apply generated declarations
++// through CSSOM after parsing so the view works with a strict style-src.
++export function serializeStyledHtml(tree) {
++	return hastToHtml(tree, generatedStyleAttribute);
++}
++
++export function applyGeneratedStyle(element, text) {
++	let declarations = declarationsByText.get(text);
++	if (declarations == null) {
++		parser ??= new CSSStyleSheet();
++		parser.replaceSync(":root {" + text + "}");
++		const parsed = parser.cssRules[0]?.style;
++		declarations = parsed == null ? [] : Array.from(parsed, name => [
++			name,
++			parsed.getPropertyValue(name),
++			parsed.getPropertyPriority(name)
++		]);
++		if (declarationsByText.size < 512) declarationsByText.set(text, declarations);
++	}
++	element.removeAttribute("style");
++	for (const [name, value, priority] of declarations) element.style.setProperty(name, value, priority);
++}
++
++export function applyGeneratedStyles(element) {
++	function apply(node) {
++		applyGeneratedStyle(node, node.getAttribute(generatedStyleAttribute));
++		node.removeAttribute(generatedStyleAttribute);
++	}
++	if (element.hasAttribute(generatedStyleAttribute)) apply(element);
++	for (const node of element.querySelectorAll("[" + generatedStyleAttribute + "]")) apply(node);
++}
+diff --git a/dist/utils/hastToHtml.js b/dist/utils/hastToHtml.js
+index eb17bc4a027c7324cd20dea5200d117ba68d73e6..90d9126c837458dd341418103c154063f383ff89 100644
+--- a/dist/utils/hastToHtml.js
++++ b/dist/utils/hastToHtml.js
+@@ -56,8 +56,8 @@ const MAX_CACHED_STYLES = 256;
+ * Serializes a HAST node or node array to HTML. Common token spans use a fast
+ * path; other nodes and attributes use hast-util-to-html's default serialization.
+ */
+-function hastToHtml(tree) {
+-	const styles = /* @__PURE__ */ new Map();
++function hastToHtml(tree, styleAttribute = "style") {
++	const styles = { cache: /* @__PURE__ */ new Map(), attribute: styleAttribute };
+ 	return Array.isArray(tree) ? serializeChildren(tree, styles) : serializeNode(tree, styles);
+ }
+ function serializeChildren(children, styles) {
+@@ -92,10 +92,10 @@ function serializeElement(node, styles) {
+ 	return `${open}${content}</${tagName}>`;
+ }
+ function serializeStyle(value, styles) {
+-	let attribute = styles.get(value);
++	let attribute = styles.cache.get(value);
+ 	if (attribute == null) {
+-		attribute = `style="${escapeAttribute(value)}"`;
+-		if (styles.size < MAX_CACHED_STYLES) styles.set(value, attribute);
++		attribute = `${styles.attribute}="${escapeAttribute(value)}"`;
++		if (styles.cache.size < MAX_CACHED_STYLES) styles.cache.set(value, attribute);
+ 	}
+ 	return attribute;
+ }
+diff --git a/dist/utils/hostTheme.js b/dist/utils/hostTheme.js
+index 1cbc5759923c9004f461c66b03e225a1b07de975..54c85f885298d160716843694d36c73930d63d32 100644
+--- a/dist/utils/hostTheme.js
++++ b/dist/utils/hostTheme.js
+@@ -1,21 +1,40 @@
+ import { THEME_CSS_ATTRIBUTE } from "../constants.js";
+ //#region src/utils/hostTheme.ts
++const themeSheets = new WeakMap();
+ function upsertHostThemeStyle({ shadowRoot, currentNode, themeCSS }) {
+ 	if (themeCSS.trim() === "") {
+-		currentNode?.remove();
++		removeHostThemeStyle(currentNode);
+ 		return;
+ 	}
+-	currentNode ??= createHostThemeStyleNode();
+-	currentNode.textContent = themeCSS;
+-	if (currentNode.parentNode !== shadowRoot) shadowRoot.appendChild(currentNode);
+-	return currentNode;
++	const existing = themeSheets.get(shadowRoot);
++	// Reuse the marker and sheet when CodeView recycles a shadow host.
++	if (currentNode !== existing?.node) currentNode?.remove();
++	const node = existing?.node ?? createHostThemeStyleNode();
++	const sheet = existing?.sheet ?? new CSSStyleSheet();
++	sheet.replaceSync(themeCSS);
++	node.textContent = themeCSS;
++	if (node.parentNode !== shadowRoot) shadowRoot.appendChild(node);
++	if (existing == null) {
++		shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
++		themeSheets.set(shadowRoot, { node, sheet });
++	}
++	return node;
++}
++function removeHostThemeStyle(node) {
++	const shadowRoot = node?.parentNode;
++	const existing = themeSheets.get(shadowRoot);
++	if (existing != null && existing.node === node) {
++		shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(sheet => sheet !== existing.sheet);
++		themeSheets.delete(shadowRoot);
++	}
++	node?.remove();
+ }
+ function createHostThemeStyleNode() {
+-	const node = document.createElement("style");
++	const node = document.createElement("meta");
+ 	node.setAttribute(THEME_CSS_ATTRIBUTE, "");
+ 	return node;
+ }
+ //#endregion
+-export { createHostThemeStyleNode, upsertHostThemeStyle };
++export { createHostThemeStyleNode, removeHostThemeStyle, upsertHostThemeStyle };
+ 
+ //# sourceMappingURL=hostTheme.js.map
