@@ -1,8 +1,10 @@
 import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [
+    tailwindcss(),
     svelte({
       configFile: false,
       preprocess: vitePreprocess(),
@@ -10,6 +12,7 @@ export default defineConfig({
   ],
   resolve: { conditions: ["browser"] },
   test   : {
+    css        : { include: [/\/app\.css\?inline$/u] },
     environment: "happy-dom",
     coverage   : {
       include   : ["src/**/*.{svelte,ts}"],

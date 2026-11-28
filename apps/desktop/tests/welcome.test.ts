@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import appStyles from "../src/app.css?inline";
 import DiffView from "../src/lib/diff-view.svelte";
 import { ssr } from "../src/routes/+layout.js";
 import Page from "../src/routes/+page.svelte";
@@ -350,6 +351,13 @@ it("keeps text rows and scroll position stable when a patch leaves and reenters 
 });
 
 it("preserves measured space for offscreen row blocks in a large diff", async () => {
+  // Happy DOM ignores cascade layers, so apply the generated rule directly.
+  const sizeRule = appStyles.match(/\.block-\\\(--diff-block-size\\\)\s*\{[^{}]*\}/u)?.[0];
+  if (!sizeRule) throw new Error("Expected Tailwind to generate the diff block size utility");
+  const stylesheet = document.createElement("style");
+  stylesheet.textContent = sizeRule;
+  document.head.append(stylesheet);
+
   const target = document.createElement("div");
   target.classList.add("file-stream");
   document.body.append(target);
@@ -374,6 +382,7 @@ it("preserves measured space for offscreen row blocks in a large diff", async ()
   onTestFinished(async () => {
     await unmount(view);
     target.remove();
+    stylesheet.remove();
     tableBounds.mockRestore();
   });
   await vi.waitFor(() => expect(target.querySelectorAll("table").length).toBeGreaterThan(1));
@@ -382,15 +391,14 @@ it("preserves measured space for offscreen row blocks in a large diff", async ()
   const updateVisibility = slot && fileVisibility.get(slot);
   if (!slot || !updateVisibility) throw new Error("Expected the row block to be observed");
 
-  const measuredSize = slot.style.getPropertyValue("--diff-block-size");
-  expect(Number.parseFloat(measuredSize)).toBeGreaterThan(0);
+  const measuredSize = `${ table.getBoundingClientRect().height }px`;
   updateVisibility(false);
   expect(slot.querySelector("table")).toBeNull();
-  expect(slot.style.getPropertyValue("--diff-block-size")).toBe(measuredSize);
+  expect(globalThis.getComputedStyle(slot).blockSize).toBe(measuredSize);
 
   updateVisibility(true);
   expect(slot.querySelector("table")?.textContent).toContain("new line");
-  expect(slot.style.getPropertyValue("--diff-block-size")).toBe(measuredSize);
+  expect(globalThis.getComputedStyle(slot).blockSize).toBe(measuredSize);
 });
 
 it("opens the added checkout, switches worktrees, and shows unified patches with size changes", async () => {
