@@ -2,7 +2,7 @@
 /* eslint-disable @stylistic/key-spacing -- Type annotations follow type-annotation-spacing. */
 import type { ReviewPatch } from "./patch.js";
 import type { ChangedFile, Comparison, DiffLayout, WorktreePatch } from "./revisions.js";
-import { type CodeViewItem, type CodeViewOptions, CodeView } from "@pierre/diffs";
+import { type CodeViewItem, type CodeViewOptions, CodeView, DEFAULT_CODE_VIEW_FILE_METRICS } from "@pierre/diffs";
 import { mount, onMount, tick, unmount } from "svelte";
 import { SvelteMap } from "svelte/reactivity";
 import { type FileCategory, generatedCategory } from "./category-settings.js";
@@ -139,9 +139,7 @@ function itemFor(entry: ReviewEntry): CodeViewItem<undefined> {
 function mountControls(host: HTMLElement, initial: ReviewEntry): void {
   const { id } = initial;
   const slots = slotsFor(id);
-
-  // Keep the frame out of CodeView's collapsed header height.
-  host.classList.add("review-file", "block", "rounded-[7px]", "inset-ring", "inset-ring-divider");
+  host.classList.add("review-file", "block", "rounded-[7px]", "border", "border-divider");
   mounted.set(id, {
     slots,
     controls: mount(ReviewFile, {
@@ -178,6 +176,8 @@ onMount(() => {
   const header = root.ownerDocument.createElement("p");
   header.className = "m-0 px-2 pb-2 text-[0.8rem] text-muted";
   const options: CodeViewOptions<undefined, undefined> = {
+    // Include both 1px borders when CodeView estimates the file height.
+    itemMetrics         : { diffHeaderHeight: DEFAULT_CODE_VIEW_FILE_METRICS.diffHeaderHeight + 2 },
     overflow            : "wrap",
     stickyHeaders       : true,
     renderCodeViewHeader: () => header,
