@@ -820,7 +820,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
     ...unstaged,
     status     : "U",
     fingerprint: "changed",
-    patch      : "diff --cc shared.txt\n@@@ -1,1 -1,1 +1,1 @@@\n++updated\n",
+    patch      : "diff --cc shared.txt\n@@@ -1,1 -1,1 +1,1 @@@\n++<strong data-patch-probe>updated</strong> & text\n",
   };
   const reviewedConflict = {
     ...conflict,
@@ -924,6 +924,8 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   expect(element(target, "[role='alert']").textContent).toBe("Review the current patch before staging.");
   expect(element(target, `${ files }:nth-of-type(2)`).textContent).toContain("Conflicted");
   expect(displayedPatch(target, unstagedFile)).toBe(conflict.patch.trimEnd());
+  const rawPane = diffPanes(element(target, unstagedFile)).at(0);
+  expect(rawPane?.querySelector("[data-patch-probe]")).toBeNull();
   element(target, mark).click();
   await vi.waitFor(() => {
     expect(target.querySelector<HTMLInputElement>(mark)?.checked).toBe(true);
@@ -1150,12 +1152,19 @@ it("keeps a mode-only image patch visible alongside its previews", async () => {
 
   const imageFile = element(target, "#file-review-0");
   const imageToggle = element(imageFile, "h2 button");
+  const calls = vi.mocked(invoke).mock.calls;
+  const detailReads = (): number => calls.filter(([command]) => command === "read_file_details").length;
+  expect(detailReads()).toBe(2);
   imageToggle.click();
   await vi.waitFor(() => expect(imageFile.querySelector("[aria-label='Image comparison']")).toBeNull());
   expect(imageFile.querySelector(".size-change")?.textContent.trim()).toBe("0 B");
+  expect(detailReads()).toBe(2);
 
   imageToggle.click();
-  await vi.waitFor(() => expect(imageFile.querySelector("[aria-label='Image comparison'] img")).toBeTruthy());
+  await vi.waitFor(() => {
+    expect(imageFile.querySelector("[aria-label='Image comparison'] img")).toBeTruthy();
+    expect(detailReads()).toBe(3);
+  });
 });
 
 it("scopes the dedicated settings screen and returns to the same review position", async () => {

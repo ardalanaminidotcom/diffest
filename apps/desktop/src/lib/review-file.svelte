@@ -29,6 +29,7 @@ import { generatedCategory } from "./category-settings.js";
 import {
   type FileDetails,
   type FileDetailsSource,
+  type FileVersion,
   fileName,
   formatSizeChange,
   isImageVersion,
@@ -53,7 +54,9 @@ const { index, file, patch, category, reviewed, collapsed } = $derived(entry);
 const name = $derived(fileName(file.path));
 let details = $state.raw<FileDetails | null>(null);
 let detailsError = $state("");
-const showImagePreviews = $derived(details && (isImageVersion(details.before) || isImageVersion(details.after)));
+let previewsDiscarded = $state(false);
+const showImagePreviews = $derived(details && !previewsDiscarded
+  && (isImageVersion(details.before) || isImageVersion(details.after)));
 const sizeChange = $derived.by(() => {
   if (!details || !(details.before || details.after)) return null;
   const before = details.before === null ? 0 : details.before.byteSize;
@@ -67,8 +70,27 @@ $effect(() => {
   host.setAttribute("aria-label", file.path);
 });
 
+function withoutPreview(version: FileVersion | null): FileVersion | null {
+  if (!version?.preview) return version;
+  return {
+    ...version,
+    preview: null,
+  };
+}
+
+function discardPreviews(): void {
+  if (!details || !(details.before?.preview || details.after?.preview)) return;
+  details = {
+    before: withoutPreview(details.before),
+    after : withoutPreview(details.after),
+  };
+  previewsDiscarded = true;
+}
+
 $effect(() => {
-  if (category === null || untrack(() => details !== null)) return;
+  const loadPreviews = !collapsed;
+  if (!loadPreviews) untrack(discardPreviews);
+  if (category === null || untrack(() => details !== null && (!loadPreviews || !previewsDiscarded))) return;
   const paths = {
     path             : file.path,
     previousPath     : file.previousPath,
@@ -99,7 +121,10 @@ $effect(() => {
     source,
   }).then(
     (result) => {
-      if (current) details = result;
+      if (!current) return;
+      details = result;
+      previewsDiscarded = false;
+      if (!loadPreviews) discardPreviews();
     },
     (error: unknown) => {
       if (current) detailsError = String(error);
@@ -159,7 +184,7 @@ function portal(node: HTMLElement, target: HTMLElement): { destroy(): void; } {
       {#if details && showImagePreviews}
         <FilePreviews {details} />
       {:else if !file.patch && !detailsError}
-        <p class="m-0 px-[0.8rem] py-[0.55rem] text-muted" role="status">{details ? "No text diff available." : "Loading file…"}</p>
+        <p class="m-0 px-[0.8rem] py-[0.55rem] text-muted" role="status">{details && !previewsDiscarded ? "No text diff available." : "Loading file…"}</p>
       {/if}
     {/if}
   </div>
