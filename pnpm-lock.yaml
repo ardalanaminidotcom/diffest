@@ -182,7 +182,7 @@ overrides:
 packageExtensionsChecksum: sha256-M987z/kkt65rFsAW07VsP0Ar3GoExRmvxZDauEG+KE0=
 
 patchedDependencies:
-  '@pierre/diffs@1.7.2': d5856958b0ada8d549b17edf3d846c93c3c19bd523a5076e9ff5be8119795f43
+  '@pierre/diffs@1.7.2': 4f5b62241ef120ed9365f5264195300927e73302b1be012ef10833f59a097657
 
 importers:
 
@@ -232,7 +232,7 @@ importers:
     dependencies:
       '@pierre/diffs':
         specifier: 1.7.2
-        version: 1.7.2(patch_hash=d5856958b0ada8d549b17edf3d846c93c3c19bd523a5076e9ff5be8119795f43)(@shikijs/themes@4.6.0)
+        version: 1.7.2(patch_hash=4f5b62241ef120ed9365f5264195300927e73302b1be012ef10833f59a097657)(@shikijs/themes@4.6.0)
       '@tauri-apps/api':
         specifier: 2.12.5
         version: 2.12.5
@@ -3763,7 +3763,7 @@ snapshots:
   '@oxlint/binding-win32-x64-msvc@1.94.0':
     optional: true
 
-  '@pierre/diffs@1.7.2(patch_hash=d5856958b0ada8d549b17edf3d846c93c3c19bd523a5076e9ff5be8119795f43)(@shikijs/themes@4.6.0)':
+  '@pierre/diffs@1.7.2(patch_hash=4f5b62241ef120ed9365f5264195300927e73302b1be012ef10833f59a097657)(@shikijs/themes@4.6.0)':
     dependencies:
       '@pierre/highlights': 0.6.0
       '@pierre/patches': 0.0.1

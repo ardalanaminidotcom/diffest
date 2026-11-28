@@ -159,6 +159,49 @@ index 545a3446a17190214924f5fc445c51bb1a24db52..311510e528b9ca7785b0770579a4552b
  	}
  }
  //#endregion
+diff --git a/dist/highlighter/themes/themeResolver.js b/dist/highlighter/themes/themeResolver.js
+--- a/dist/highlighter/themes/themeResolver.js
++++ b/dist/highlighter/themes/themeResolver.js
+@@ -5,7 +5,11 @@
+ const customThemes = /* @__PURE__ */ new Map();
+ const resolvers = /* @__PURE__ */ new Map();
+ const loadHighlightsThemeCatalog = createCachedLoader(() => import("@pierre/highlights/themes/loader"));
+-const loadPierreThemeCatalog = createCachedLoader(() => import("@pierre/theming/themes"));
++// Diffest uses the two default Pierre themes.
++const pierreThemeLoaders = /* @__PURE__ */ new Map([
++	["pierre-dark", () => import("@pierre/theme/pierre-dark")],
++	["pierre-light", () => import("@pierre/theme/pierre-light")]
++]);
+ const loadShikiCore = createCachedLoader(() => import("shiki/core"));
+ const ZED_COLOR_ALIASES = [
+ 	["editor.lineHighlightBackground", "editor.active_line.background"],
+@@ -94,20 +98,13 @@
+ 				if (bundledLoader != null) return createHighlightsTheme(name, (await bundledLoader()).default);
+ 				if (custom?.textmate != null) throw new Error(`Theme "${name}" is only registered for TextMate; use registerCustomTheme(name, loader, 'zed') for Highlights.`);
+ 			} else {
+-				const loader = custom?.textmate ?? custom?.diffs;
+-				let loaded;
+-				if (loader != null) {
+-					const result = await loader();
+-					loaded = "default" in result ? result.default : result;
+-				} else {
+-					const catalog = loadPierreThemeCatalog();
+-					const { themes } = catalog instanceof Promise ? await catalog : catalog;
+-					const descriptor = themes.getTheme(name);
+-					if (descriptor == null && custom?.zed != null) throw new Error(`Theme "${name}" is only registered for Zed; use registerCustomTheme(name, loader, 'textmate') for Shiki.`);
+-					if (descriptor == null) throw new Error(`No valid theme loader registered for "${name}"`);
+-					const result = await descriptor.load();
+-					loaded = "default" in result ? result.default : result;
++				const loader = custom?.textmate ?? custom?.diffs ?? pierreThemeLoaders.get(name);
++				if (loader == null) {
++					if (custom?.zed != null) throw new Error(`Theme "${name}" is only registered for Zed; use registerCustomTheme(name, loader, 'textmate') for Shiki.`);
++					throw new Error(`No valid theme loader registered for "${name}"`);
+ 				}
++				const result = await loader();
++				const loaded = "default" in result ? result.default : result;
+ 				if ("style" in loaded || "themes" in loaded) throw new Error(`Theme "${name}" is a Zed theme; use preferredHighlighter: 'highlights' or register a TextMate theme for Shiki.`);
+ 				const core = loadShikiCore();
+ 				const { normalizeTheme, createCssVariablesTheme } = core instanceof Promise ? await core : core;
 diff --git a/dist/utils/generatedStyles.js b/dist/utils/generatedStyles.js
 new file mode 100644
 index 0000000000000000000000000000000000000000..9350cfd11ad20e81ccd0c2a8dc4dc440b4935740
