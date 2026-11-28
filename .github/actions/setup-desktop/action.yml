@@ -1,0 +1,32 @@
+name: Set up the Desktop build
+description: Install Tauri build prerequisites for a Desktop target
+inputs:
+  target:
+    description: Rust target triple or universal-apple-darwin
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Linux system dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+    - name: Install Rust target
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        if [[ "$TARGET" == universal-apple-darwin ]]; then
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        else
+          rustup target add "$TARGET"
+        fi
+
+    - name: Set up pnpm with runtime
+      uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
+      with:
+        cache: true
+        require-lockfile: true
