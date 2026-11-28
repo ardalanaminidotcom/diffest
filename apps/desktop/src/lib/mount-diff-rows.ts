@@ -23,6 +23,7 @@ function isSelected(node: Element): boolean {
 function windowDiffBlocks(node: HTMLElement, blocks: string[], onMount: () => void): () => void {
   const slots = blocks.map((html) => {
     const element = node.ownerDocument.createElement("div");
+    element.className = "block-(--diff-block-size)";
     node.append(element);
     return {
       element,
@@ -46,7 +47,7 @@ function windowDiffBlocks(node: HTMLElement, blocks: string[], onMount: () => vo
       const temporary = batch.filter(slot => !slot.element.firstElementChild);
       for (const { element, html } of temporary) element.innerHTML = html;
       const heights = batch.map(slot => slot.element.firstElementChild?.getBoundingClientRect().height ?? 0);
-      for (const [offset, slot] of batch.entries()) slot.element.style.blockSize = `${ heights[offset] }px`;
+      for (const [offset, slot] of batch.entries()) slot.element.style.setProperty("--diff-block-size", `${ heights[offset] }px`);
       for (const { element } of temporary) element.replaceChildren();
     }
   }

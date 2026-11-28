@@ -382,15 +382,15 @@ it("preserves measured space for offscreen row blocks in a large diff", async ()
   const updateVisibility = slot && fileVisibility.get(slot);
   if (!slot || !updateVisibility) throw new Error("Expected the row block to be observed");
 
-  const measuredSize = slot.style.blockSize;
+  const measuredSize = slot.style.getPropertyValue("--diff-block-size");
   expect(Number.parseFloat(measuredSize)).toBeGreaterThan(0);
   updateVisibility(false);
   expect(slot.querySelector("table")).toBeNull();
-  expect(slot.style.blockSize).toBe(measuredSize);
+  expect(slot.style.getPropertyValue("--diff-block-size")).toBe(measuredSize);
 
   updateVisibility(true);
   expect(slot.querySelector("table")?.textContent).toContain("new line");
-  expect(slot.style.blockSize).toBe(measuredSize);
+  expect(slot.style.getPropertyValue("--diff-block-size")).toBe(measuredSize);
 });
 
 it("opens the added checkout, switches worktrees, and shows unified patches with size changes", async () => {
@@ -470,7 +470,7 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   chooseSource(target, "abc123");
   await vi.waitFor(() => {
     expect(target.querySelector("pre")?.textContent).toBe("+new content\n");
-    expect(target.querySelector(".file-title .size-change.additions")?.textContent.trim()).toBe("+1.4 KB");
+    expect(target.querySelector(".file-title .size-change")?.textContent.trim()).toBe("+1.4 KB");
     expect(target.querySelector("#changed-files .size-change")).toBeNull();
   });
   expect(commands).toHaveBeenCalledWith("compare_revisions", {
@@ -491,7 +491,7 @@ it("opens the added checkout, switches worktrees, and shows unified patches with
   const renamedFile = element(target, "#file-review-1");
   expect(renamedFile.querySelector("pre")?.textContent).toBe("-old\n+new\n");
   await vi.waitFor(() => {
-    expect(renamedFile.querySelector(".file-title .size-change.deletions")?.textContent.trim()).toBe("−320 B");
+    expect(renamedFile.querySelector(".file-title .size-change")?.textContent.trim()).toBe("−320 B");
   });
   await vi.waitFor(() => {
     expect(invoke).toHaveBeenCalledWith("read_file_details", {
@@ -716,7 +716,7 @@ it("fetches remote branches in the target picker without rerunning the current c
     .find(button => button.textContent === "Fetch branches");
   if (!fetch) throw new Error("Missing Fetch branches button");
   fetch.click();
-  const release = `${ picker } .option[title='origin/release']`;
+  const release = `${ picker } button[title='origin/release']`;
   await vi.waitFor(() => expect(target.querySelector(release)).toBeTruthy());
   expect(revisionCommands).toHaveBeenLastCalledWith("open_worktree", { checkout: main.path });
   expect(element(target, picker).textContent).toContain("One remote could not be reached");
@@ -945,7 +945,7 @@ it("reviews separate staged and unstaged patches and refreshes the active worktr
   const files = "[aria-label='Changed files'] button";
   const unstagedFile = "#file-review-1";
   const mark = `${ unstagedFile } input[type=checkbox]`;
-  const stage = `${ unstagedFile } .stage-file`;
+  const stage = `${ unstagedFile } header > button`;
   const unstagedDiff = `${ unstagedFile } pre`;
   await vi.waitFor(() => {
     expect(target.querySelector(worktree)?.textContent).toContain("main");
@@ -1312,7 +1312,7 @@ it("scopes the dedicated settings screen and returns to the same review position
   limit.value = "14";
   limit.dispatchEvent(new Event("input", { bubbles: true }));
   flushSync();
-  element(screen, "form.retention").dispatchEvent(new SubmitEvent("submit", {
+  element(screen, `form:has(${ days })`).dispatchEvent(new SubmitEvent("submit", {
     bubbles   : true,
     cancelable: true,
   }));

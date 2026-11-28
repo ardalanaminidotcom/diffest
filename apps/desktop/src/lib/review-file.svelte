@@ -152,50 +152,63 @@ $effect(() => {
 });
 </script>
 
-<section class="review-file" id={`file-review-${ index }`} aria-labelledby={`file-name-${ index }`} bind:this={section}>
-  <header class="file-header">
+<section class="review-file min-w-0 overflow-clip rounded-[7px] border border-divider bg-canvas [scroll-margin-block-start:0.65rem]"
+  id={`file-review-${ index }`} aria-labelledby={`file-name-${ index }`} bind:this={section}>
+  <header class="file-header flex min-h-10 flex-wrap items-center gap-[0.45rem] bg-surface px-[0.6rem] py-[0.35rem]">
     {#if reviewed !== null}
-      <input type="checkbox" checked={reviewed} aria-disabled={busy}
+      <input class="m-0 size-4 flex-none cursor-pointer aria-disabled:cursor-default aria-disabled:opacity-[0.58]"
+        type="checkbox" checked={reviewed} aria-disabled={busy}
         aria-label={`Reviewed: ${ name }`}
         title={reviewed ? "Clear review mark" : "Mark as reviewed"} onclick={(event) => {
           event.preventDefault();
           if (!busy) onreview();
         }} />
     {/if}
-    <div class="file-heading">
-      <div class="file-title">
-        <h2 id={`file-name-${ index }`}>
-          <button type="button" aria-controls={`file-content-${ index }`} aria-expanded={expanded}
+    <div class="min-w-0 flex-[1_1_7rem]">
+      <div class="file-title flex items-center gap-[0.45rem]">
+        <h2 class="m-0 min-w-0 text-[0.95rem]" id={`file-name-${ index }`}>
+          <button class="control group box-border flex max-w-full min-w-0 cursor-pointer items-center gap-1 border-transparent bg-transparent p-[0.2rem] font-[640] enabled:hover:bg-toolbar"
+            type="button" aria-controls={`file-content-${ index }`} aria-expanded={expanded}
             title={file.path} onclick={() => expansionOverride = !expanded}>
-            <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m6 4 4 4-4 4" /></svg>
-            <span>{name}</span>
+            <svg class="size-[0.9rem] flex-none stroke-muted stroke-[1.4] group-aria-expanded:rotate-90" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m6 4 4 4-4 4" /></svg>
+            <span class="truncate">{name}</span>
           </button>
         </h2>
         {#if sizeChange !== null}
-          <span class="size-change" class:additions={sizeChange > 0} class:deletions={sizeChange < 0}
+          <span class={[
+            "size-change flex-none font-mono text-[0.8rem]/[normal] whitespace-nowrap",
+            sizeChange > 0 && "text-added-ink",
+            sizeChange < 0 && "text-removed-ink",
+          ]}
             title={`Net file size change: ${ formatSizeChange(sizeChange, true) }`}>
             {formatSizeChange(sizeChange)}
           </span>
         {/if}
       </div>
       {#if file.previousPath || file.path !== name}
-        <p title={file.previousPath ? `${ file.previousPath } → ${ file.path }` : file.path}>
+        <p class="m-0 truncate ps-[1.4rem] text-[0.8rem] text-muted" title={file.previousPath ? `${ file.previousPath } → ${ file.path }` : file.path}>
           {#if file.previousPath}{file.previousPath} → {/if}{file.path}
         </p>
       {/if}
     </div>
-    {#if generated}<span class="patch-side">{generatedCategory}</span>{/if}
-    {#if patch}<span class="patch-side">{patch.side === "staged" ? "Staged" : "Unstaged"}</span>{/if}
-    {#if file.status === "U"}<span class="patch-side deletions">Conflicted</span>{/if}
+    {#snippet badge(text: string, conflict = false)}
+      <span class={["rounded-[5px] border border-divider px-[0.38rem] py-[0.15rem] text-[0.75rem]", conflict && "text-removed-ink"]}>{text}</span>
+    {/snippet}
+    {#if generated}{@render badge(generatedCategory)}{/if}
+    {#if patch}{@render badge(patch.side === "staged" ? "Staged" : "Unstaged")}{/if}
+    {#if file.status === "U"}{@render badge("Conflicted", true)}{/if}
     {#if patch?.side === "unstaged"}
       {@const unstaged = patch}
-      <button class="stage-file" class:primary={unstaged.reviewed && unstaged.status !== "U"}
+      <button class={[
+        "control workspace-button text-[0.85rem] enabled:hover:bg-toolbar",
+        unstaged.reviewed && unstaged.status !== "U" && "border-accent bg-selection text-accent",
+      ]}
         type="button" onclick={() => onstage(unstaged)} disabled={busy || !unstaged.reviewed || unstaged.status === "U"}>
         Stage file
       </button>
     {/if}
   </header>
-  <div class="file-content" id={`file-content-${ index }`} hidden={!expanded}>
+  <div class="border-bs border-divider" id={`file-content-${ index }`} hidden={!expanded}>
     {#if expanded}
       {#if file.patch}
         <DiffView patch={file.patch} path={file.path} previousPath={file.previousPath} {layout}
@@ -203,57 +216,14 @@ $effect(() => {
       {/if}
       {#if details && showImagePreviews}
         {#if previewsDiscarded}
-          <div aria-hidden="true" style:block-size={`${ previewHeight }px`}></div>
+          <div class="block-(--preview-height)" aria-hidden="true" style:--preview-height={`${ previewHeight }px`}></div>
         {:else}
           <div bind:this={preview}><FilePreviews {details} /></div>
         {/if}
       {:else if !file.patch && !detailsError}
-        <p class="patch-note" role="status">{details ? "No text diff available." : "Loading file…"}</p>
+        <p class="m-0 px-[0.8rem] py-[0.55rem] wrap-anywhere text-muted" role="status">{details ? "No text diff available." : "Loading file…"}</p>
       {/if}
-      {#if detailsError}<p class="patch-note" role="status">{detailsError}</p>{/if}
+      {#if detailsError}<p class="m-0 px-[0.8rem] py-[0.55rem] wrap-anywhere text-muted" role="status">{detailsError}</p>{/if}
     {/if}
   </div>
 </section>
-
-<style>
-.review-file {
-  min-width: 0;
-  overflow: clip;
-  scroll-margin-block-start: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--canvas);
-}
-.file-header { display: flex; align-items: center; flex-wrap: wrap; gap: 0.45rem; min-height: 2.5rem; padding: 0.35rem 0.6rem; background: var(--surface); }
-.file-heading { flex: 1 1 7rem; min-width: 0; }
-.file-title { display: flex; align-items: center; gap: 0.45rem; }
-h2, p { margin: 0; }
-h2 { min-width: 0; font-size: 0.95rem; }
-button { min-width: 0; box-sizing: border-box; font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
-button:not(:disabled):hover { background: var(--toolbar); }
-h2 button {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  max-width: 100%;
-  padding: 0.2rem;
-  border-color: transparent;
-  background: transparent;
-  font-weight: 640;
-}
-h2 span, .file-heading p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-h2 svg { flex: none; width: 0.9rem; height: 0.9rem; stroke: var(--muted); stroke-width: 1.4; }
-h2 button[aria-expanded="true"] svg { transform: rotate(90deg); }
-input { flex: none; width: 1rem; height: 1rem; margin: 0; cursor: pointer; }
-input[aria-disabled="true"] { cursor: default; opacity: 0.58; }
-.file-heading p { padding-inline-start: 1.4rem; color: var(--muted); font-size: 0.8rem; }
-.size-change { flex: none; font: 0.8rem ui-monospace, monospace; white-space: nowrap; }
-.additions { color: var(--added-ink); }
-.deletions { color: var(--removed-ink); }
-.patch-side { border: 1px solid var(--border); border-radius: 5px; padding: 0.15rem 0.38rem; font-size: 0.75rem; }
-.stage-file { padding: 0.3rem 0.52rem; background: var(--canvas); font-size: 0.85rem; }
-.stage-file:disabled { cursor: default; opacity: 0.58; }
-.stage-file.primary { color: var(--accent); border-color: var(--accent); background: var(--selection); }
-.file-content { border-block-start: 1px solid var(--border); }
-.patch-note { padding: 0.55rem 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
-</style>
