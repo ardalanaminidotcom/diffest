@@ -19,5 +19,5 @@ tauri-build = { version = "2.7.6", features = [] }
 [dependencies]
 tauri-plugin-dialog = "2"
 diffest-core = { path = "../../../crates/diffest-core" }
-# This frontend is small enough to embed directly, and capabilities are defined at build time.
-tauri = { version = "2.12.7", default-features = false, features = ["wry", "common-controls-v6", "x11", "dbus"] }
+# Capabilities are defined at build time.
+tauri = { version = "2.12.7", default-features = false, features = ["wry", "common-controls-v6", "x11", "dbus", "compression"] }
