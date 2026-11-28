@@ -139,7 +139,9 @@ function itemFor(entry: ReviewEntry): CodeViewItem<undefined> {
 function mountControls(host: HTMLElement, initial: ReviewEntry): void {
   const { id } = initial;
   const slots = slotsFor(id);
-  host.classList.add("review-file", "block", "rounded-[7px]", "border", "border-divider");
+
+  // Keep the frame out of CodeView's collapsed header height.
+  host.classList.add("review-file", "block", "rounded-[7px]", "inset-ring", "inset-ring-divider");
   mounted.set(id, {
     slots,
     controls: mount(ReviewFile, {
