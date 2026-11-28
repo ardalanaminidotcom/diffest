@@ -8,7 +8,7 @@ The desktop app in `apps/desktop/src-tauri` shares the root `Cargo.lock`, releas
 
 ## Desktop CI and releases
 
-Create a GitHub Actions environment named `build` with the maintainers as required reviewers and leave its secrets empty. If the environment restricts refs, allow `refs/pull/*/merge`. Enable approval for all external fork workflows and keep code-owner review required on `main`. Review changes to workflows and build scripts before approving them. The existing required **Build** check passes only after all six **Desktop compile** checks pass. Keep **Build** and up-to-date branches required in the `main` ruleset, and verify the approval flow on a fork PR. Lint and tests run separately from build approval.
+Create a GitHub Actions environment named `build` with the maintainers as required reviewers and leave its secrets empty. If the environment restricts refs, allow `refs/pull/*/merge`. Enable approval for all external fork workflows and keep code-owner review required on `main`. Review changes to workflows and build scripts before approving them. The existing required **Build** check passes only after all six **Desktop compile** checks pass. Keep **Build** and up-to-date branches required in the `main` ruleset, and verify the approval flow on a fork PR. Lint and tests must pass before the native jobs request approval.
 
 To prepare a release, configure Git commit and tag signing with a signing key registered on GitHub. A release maintainer needs permission to push directly to `main` through the ruleset that requires PRs and checks.
 
@@ -26,7 +26,7 @@ The script updates the Desktop manifests and Cargo lockfile, then creates a sign
 git push --atomic origin main refs/tags/desktop@v0.1.0
 ```
 
-**Desktop release** builds three ad-hoc-signed macOS DMGs (Apple Silicon, Intel, and Universal), unsigned Windows NSIS and MSI installers for x64 and ARM64, and Linux AppImage, Debian, and RPM packages for x64 and ARM64. Review and publish the GitHub draft after the workflow confirms all 13 assets. Re-run failed jobs or dispatch **Desktop release** from `main` for the same tag to retry infrastructure failures. Use a new version for source fixes. Keep the repository’s **Immutable releases** setting enabled so publication locks the tag and assets.
+**Desktop release** builds three ad-hoc-signed macOS DMGs (Apple Silicon, Intel, and Universal), unsigned Windows NSIS and MSI installers for x64 and ARM64, and Linux AppImage, Debian, and RPM packages for x64 and ARM64. Review and publish the GitHub draft after the workflow confirms all 13 assets. Re-run failed jobs or dispatch **Desktop release** from `main` for the same tag to retry infrastructure failures. Use a new version for source fixes. Keep the repository’s **Immutable releases** setting enabled so publication locks the tag and assets. To verify a downloaded installer against the published release, run `gh release verify-asset desktop@v0.1.0 PATH_TO_INSTALLER --repo ardalanaminidotcom/diffest`.
 
 ## 3rd Party Agent Skills Reference
 
